@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <title>Gemini → Frame (No backend, solo frontend!)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2em; background: #fafbfc; color: #222; }
+    #container { max-width: 600px; margin: auto; background: #fff; border-radius: 16px; box-shadow: 0 2px 16px #0001; padding: 2em; }
+    input, button, textarea { font-size: 1.1em; margin: 0.4em 0; border-radius: 8px; border: 1px solid #ccc; padding: 0.5em; }
+    button { background: #226ce0; color: #fff; border: none; cursor: pointer; }
+    button:disabled { opacity: 0.5; }
+    #status { min-height: 1.5em; margin-top: 1em; }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <h1>Gemini → Frame (No Backend!)</h1>
+    <button id="connectFrame">Connetti a Frame</button>
+    <br>
+    <textarea id="promptInput" rows="3" style="width: 100%;" placeholder="Scrivi qui il prompt per Gemini..."></textarea>
+    <br>
+    <button id="sendPrompt" disabled>Invia Prompt a Gemini & Frame</button>
+    <div id="status">Stato: Pronto</div>
+    <div style="margin-top:2em;font-size:0.9em;color:#888;">
+      Powered by <a href="https://brilliant.xyz/frame" target="_blank">Frame</a>
+    </div>
+  </div>
+  <script type="module">
+    // Configurazione BLE Frame
+    const SERVICE_UUID = '0000fefd-0000-1000-8000-00805f9b34fb';
+    const CHARACTERISTIC_UUID = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';
+    const MSG_CODE_PLAINTEXT = 0x0a;
+
+    // Metti qui la tua Gemini API Key (per uso personale/demo PRIVATA)
+    const GEMINI_API_KEY = 'INSERISCI-LA-TUA-GEMINI-API-KEY-QUI';
+
+    let frameCharacteristic = null;
+
+    function buildTxPlainTextMessage(text) {
+      const encoder = new TextEncoder();
+      const textBytes = encoder.encode(text);
+      const buffer = new Uint8Array(1 + 2 + textBytes.length);
+      buffer[0] = MSG_CODE_PLAINTEXT;
+      buffer[1] = textBytes.length & 0xFF;
+      buffer[2] = (textBytes.length >> 8) & 0xFF;
+      buffer.set(textBytes, 3);
+      return buffer;
+    }
+
+    async function connectToFrame() {
+      updateStatus('Ricerca degli occhiali Frame...');
+      const device = await navigator.bluetooth.requestDevice({
+        filters: [{ namePrefix: 'Frame' }],
+        optionalServices: [SERVICE_UUID]
+      });
+      const server = await device.gatt.connect();
+      const service = await server.getPrimaryService(SERVICE_UUID);
+      const characteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
+      updateStatus('Occhiali collegati!');
+      return characteristic;
+    }
+
+    async function fetchGemini(prompt) {
+      // Chiamata diretta Gemini API: https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent
+      const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=' + GEMINI_API_KEY;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }]
+        })
+      });
+      if (!res.ok) throw new Error('Errore chiamando Gemini');
+      const data = await res.json();
+      // Parsing secondo la risposta tipica di Gemini
+      try {
+        return data.candidates[0].content.parts[0].text;
+      } catch {
+        return JSON.stringify(data);
+      }
+    }
+
+    function updateStatus(msg) {
+      document.getElementById('status').textContent = "Stato: " + msg;
+    }
+
+    document.getElementById('connectFrame').onclick = async () => {
+      try {
+        frameCharacteristic = await connectToFrame();
+        document.getElementById('sendPrompt').disabled = false;
+      } catch (e) {
+        updateStatus('Errore connessione: ' + e);
+      }
+    };
+
+    document.getElementById('sendPrompt').onclick = async () => {
+      const prompt = document.getElementById('promptInput').value.trim();
+      if (!prompt) {
+        updateStatus('Prompt vuoto.');
+        return;
+      }
+      if (!frameCharacteristic) {
+        updateStatus('Collega prima Frame!');
+        return;
+      }
+      updateStatus('Richiesta a Gemini...');
+      document.getElementById('sendPrompt').disabled = true;
+      try {
+        const reply = await fetchGemini(prompt);
+        updateStatus('Risposta Gemini ricevuta. Invio agli occhiali...');
+        const message = buildTxPlainTextMessage(reply);
+        await frameCharacteristic.writeValue(message);
+        updateStatus('Risposta visualizzata sugli occhiali!');
+      } catch (e) {
+        updateStatus('Errore: ' + e.message);
+      }
+      document.getElementById('sendPrompt').disabled = false;
+    };
+  </script>
+</body>
+</html>
