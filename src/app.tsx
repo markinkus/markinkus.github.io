@@ -6,7 +6,7 @@ const GEMINI_API_KEY = "AIzaSyCUspjopyRDqf8iR-ftL7UsPyaYfAt1p_M";
 
 async function fetchGemini(prompt: string): Promise<string> {
   const url =
-    "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=" +
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" +
     GEMINI_API_KEY;
   const res = await fetch(url, {
     method: "POST",
@@ -41,23 +41,25 @@ export default function App() {
     setStatus("Occhiali connessi e Lua caricata!");
   }
 
-  async function handleSend() {
-    setStatus("Invio a Gemini...");
-    try {
-      const reply = await fetchGemini(prompt);
-      setResponse(reply);
-      setStatus("Risposta Gemini ricevuta. Invio a Frame...");
-      if (frame) {
-        const msg = new TxPlainText(reply);
-        await frame.sendMessage(0x0a, msg.pack());
-        setStatus("Risposta mostrata sugli occhiali!");
-      } else {
-        setStatus("Errore: non connesso a Frame.");
-      }
-    } catch (err: any) {
-      setStatus("Errore: " + err.message);
+async function handleSend() {
+  setStatus("Invio a Gemini…");
+  try {
+    const reply = await fetchGemini(prompt);
+    setResponse(reply);
+    setStatus("Risposta Gemini ricevuta.");
+    
+    if (frame) {
+      setStatus("Invio a Frame…");
+      const msg = new TxPlainText(reply);
+      await frame.sendMessage(0x0a, msg.pack());
+      setStatus("Risposta mostrata sugli occhiali!");
+    } else {
+      setStatus("Frame non connesso – risposta solo a schermo.");
     }
+  } catch (err: any) {
+    setStatus("Errore: " + err.message);
   }
+}
 
   return (
     <div style={{ maxWidth: 600, margin: "auto", padding: 24 }}>
@@ -72,7 +74,7 @@ export default function App() {
         placeholder="Scrivi il prompt per Gemini..."
       />
       <br />
-      <button onClick={handleSend} disabled={!frame}>
+      <button onClick={handleSend}>
         Invia Prompt a Gemini & Frame
       </button>
       <div style={{ marginTop: 12, minHeight: 24 }}>Stato: {status}</div>
