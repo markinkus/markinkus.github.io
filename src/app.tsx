@@ -2,7 +2,7 @@ import { useState } from "react";
 import { FrameMsg, StdLua, TxPlainText } from "frame-msg";
 import plainTextFrameApp from "../lua/plain_text_frame_app.lua?raw";
 
-const GEMINI_API_KEY = "INSERISCI-LA-TUA-GEMINI-API-KEY-QUI";
+const GEMINI_API_KEY = "AIzaSyCUspjopyRDqf8iR-ftL7UsPyaYfAt1p_M";
 
 async function fetchGemini(prompt: string): Promise<string> {
   const url =
