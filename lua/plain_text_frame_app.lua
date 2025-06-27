@@ -3,73 +3,86 @@
 local data       = require('data.min')
 local plain_text = require('plain_text.min')
 
--- msgCode per plain text
-TEXT_FLAG = 0x0a
-data.parsers[TEXT_FLAG] = plain_text.parse_plain_text
+-- Phone to Frame msg code
+TEXT_MSG = 0x0a
+data.parsers[TEXT_MSG] = plain_text.parse_plain_text
 
--- Parametri di layout
-local char_per_line   = 25      -- max caratteri per riga
-local lines_per_page  = 5       -- quante righe per “pagina”
-local line_height     = 60      -- pixel tra le righe
+-- Layout constants
+local CHAR_PER_LINE  = 25   -- quanti caratteri massimi per riga
+local LINES_PER_PAGE = 5    -- quante righe mostro per “pagina”
+local LINE_HEIGHT    = 60   -- pixel di spaziatura verticale
 
 -- Stato
-local lines  = {}   -- righe di testo “wrappate”
-local scroll = 0    -- indice di riga da cui cominciare
+local wrapped_lines = {}  -- array di righe wrappate
+local page_index    = 1   -- indice della riga di partenza
 
--- Funzione di “wrapping” del testo
-local function wrap_text(text)
-  local t = {}
-  for i = 1, #text, char_per_line do
-    table.insert(t, text:sub(i, i + char_per_line - 1))
-  end
-  return t
+-- Wrapping semplice: spezza la stringa in blocchi di CHAR_PER_LINE
+local function wrap_text(str)
+    local result = {}
+    local len = #str
+    local i = 1
+    while i <= len do
+        table.insert(result,
+            str:sub(i, math.min(i + CHAR_PER_LINE - 1, len))
+        )
+        i = i + CHAR_PER_LINE
+    end
+    return result
 end
 
--- Pulisce lo schermo
+-- Pulisce il display
 local function clear_display()
-  frame.display.text(" ", 1, 1)
-  frame.display.show()
-  frame.sleep(0.04)
+    frame.display.text(" ", 1, 1)
+    frame.display.show()
+    frame.sleep(0.04)
 end
 
--- Mostra la pagina corrente di righe
-local function render()
-  clear_display()
-  for i = 1, lines_per_page do
-    local idx = scroll + i
-    if not lines[idx] then break end
-    frame.display.text(lines[idx], 1, (i - 1) * line_height + 1)
-  end
-  frame.display.show()
+-- Mostra la “pagina” corrente di righe
+local function render_page()
+    clear_display()
+    for offset = 0, LINES_PER_PAGE - 1 do
+        local idx = page_index + offset
+        local line = wrapped_lines[idx]
+        if not line then break end
+        frame.display.text(line, 1, offset * LINE_HEIGHT + 1)
+    end
+    frame.display.show()
 end
 
--- Tap callback: avanza di una “pagina”, o torna a zero
+-- Callback al “tap”: avanza di una pagina, o torna all’inizio
 local function on_tap()
-  scroll = scroll + lines_per_page
-  if scroll >= #lines then scroll = 0 end
-  render()
+    page_index = page_index + LINES_PER_PAGE
+    if page_index > #wrapped_lines then
+        page_index = 1
+    end
+    render_page()
 end
 
--- Attiva subito il callback sui tap
+-- Attiva subito il tap callback
 frame.imu.tap_callback(on_tap)
 
--- Main loop
+-- Main loop, con pcall per non far crashare l’app
 function app_loop()
-  frame.display.text('Frame App Started', 1, 1)
-  frame.display.show()
-  print('Frame app is running')
-
-  while true do
-    local items_ready = data.process_raw_items()
-    if items_ready > 0 and data.app_data[TEXT_FLAG] then
-      -- arrivo nuovo testo: wrappalo e mostra la prima pagina
-      lines  = wrap_text(data.app_data[TEXT_FLAG].string)
-      scroll = 0
-      render()
-      data.app_data[TEXT_FLAG] = nil
+    clear_display()
+    print('Frame scroll app in esecuzione')
+    while true do
+        local ok, err = pcall(function()
+            local ready = data.process_raw_items()
+            if ready > 0 and data.app_data[TEXT_MSG] then
+                local txt = data.app_data[TEXT_MSG].string or ""
+                wrapped_lines = wrap_text(txt)
+                page_index = 1
+                render_page()
+                data.app_data[TEXT_MSG] = nil
+            end
+        end)
+        if not ok then
+            -- stampa l’errore sullo stdout (vedi console host)
+            print('Errore in app_loop:', err)
+            clear_display()
+        end
+        frame.sleep(0.1)
     end
-    frame.sleep(0.1)
-  end
 end
 
 app_loop()
