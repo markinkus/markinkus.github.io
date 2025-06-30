@@ -4,8 +4,7 @@ import {
   StdLua,
   TxPlainText,
   TxCaptureSettings,
-  TxSprite, 
-  TxImageSpriteBlock,
+  TxSprite,
   RxPhoto
 } from "frame-msg";
 import { useEffect } from "react";
@@ -81,12 +80,12 @@ export default function App() {
       const f = new FrameMsg();
       await f.connect();
       addLog("✔ connected");
-
+      f.attachPrintResponseHandler(console.log);
       await f.uploadStdLuaLibs([
         StdLua.DataMin,
         StdLua.PlainTextMin,
         StdLua.CameraMin,
-        StdLua.ImageSpriteBlockMin
+        StdLua.SpriteMin
       ]);
       addLog("✔ libs loaded");
 
@@ -277,23 +276,11 @@ export default function App() {
          const arrayBuffer = await finalBlob.arrayBuffer();
          addLog("✔ overlay disegnata");
        
-         // 4) Quantizza a 16 colori e crea TxSprite (await perché è async)
-         const sprite = await TxSprite.fromImageBytes(
-           arrayBuffer,    // ArrayBuffer dell'immagine
-           /* maxPixels */ undefined,
-           /* compress? */ false
-         );
-       
-         // 5) Suddividi in blocchi e invia: spriteLineHeight = 20px
-         const isb = new TxImageSpriteBlock(sprite, 20);
+         const sprite = await TxSprite.fromImageBytes(arrayBuffer, 64000); // max 64 000 px ≈ 256×256
 
-        // 5) Invia su Frame in blocchi
-        setStatus("Invio minimappa…");
-        await frame.sendMessage(0x20, isb.pack());
-        // usa spriteLines invece di sprite_lines
-        for (const slice of isb.spriteLines) {
-          await frame.sendMessage(0x20, slice.pack());
-        }
+         setStatus("Invio minimappa…");
+
+        await frame.sendMessage(0x20, sprite.pack());
         addLog("✔ minimappa inviata");
         setStatus("Minimappa mostrata sugli occhiali!");
 
@@ -336,16 +323,9 @@ const handleGenerateImage = async () => {
     // 3) Carica i dati e crea ArrayBuffer
     const arrayBuffer = await imgBlob.arrayBuffer();
 
-    // 4) Quantizza a 16 colori con TxSprite
-    const sprite = await TxSprite.fromImageBytes(arrayBuffer, /* maxPixels? */ undefined, /* compress? */ false);
-    const isb    = new TxImageSpriteBlock(sprite, /* spriteLineHeight= */ 20);
-
-    // 5) Invia in blocchi via BLE
+    const sprite = await TxSprite.fromImageBytes(arrayBuffer, 64000);
     setStatus("Invio immagine su Frame…");
-    await frame.sendMessage(0x20, isb.pack());
-    for (const slice of isb.spriteLines) {
-      await frame.sendMessage(0x20, slice.pack());
-    }
+    await frame.sendMessage(0x20, sprite.pack());
     addLog("✔ immagine inviata agli occhiali");
     setStatus("Immagine Pollinations mostrata su occhiali!");
   } catch (err: any) {
