@@ -11,7 +11,7 @@ import plainTextFrameApp from "../lua/plain_text_frame_app.lua?raw";
 const GEMINI_API_KEY = "AIzaSyCUspjopyRDqf8iR-ftL7UsPyaYfAt1p_M";
 async function fetchGemini(prompt: string): Promise<string> {
   const url =
-    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" +
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" +
     GEMINI_API_KEY;
   const res = await fetch(url, {
     method: "POST",
@@ -114,29 +114,49 @@ export default function App() {
   };
 
   /** 3) Invio prompt + risposta sugli occhiali */
-  const handleSend = async () => {
-    setStatus("Richiesta Gemini…");
-    addLog("▶ handleSend");
-    try {
-      const reply = await fetchGemini(prompt);
-      setResponse(reply);
-      addLog("✔ Gemini reply: " + reply.slice(0, 30) + "…");
+const handleSend = async () => {
+  setStatus("Richiesta a Gemini…");
+  addLog("▶ handleSend");
 
-      if (frame) {
-        setStatus("Invio testo a Frame…");
-        const msg = new TxPlainText(reply);
-        await frame.sendMessage(0x0a, msg.pack());
-        addLog("✔ sent to Frame");
-        setStatus("Testo mostrato sugli occhiali!");
-      } else {
-        setStatus("Frame non connesso");
-      }
-    } catch (e: any) {
-      const msg = e.message || String(e);
-      addLog("✖ handleSend error: " + msg);
-      setStatus("Errore send: " + msg);
+  try {
+    // 1) Se abbiamo una foto, recuperiamo il blob e facciamo DataURL
+    let fullPrompt = prompt;
+    if (photoUrl) {
+      addLog("• includo foto nel prompt");
+      const resp = await fetch(photoUrl);
+      const blob = await resp.blob();
+      const dataUrl: string = await new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result as string);
+        reader.readAsDataURL(blob);
+      });
+      // Prepara il prompt con immagine + testo
+      fullPrompt = `Descrivi questa immagine:\n${dataUrl}\n\nTesto aggiuntivo:\n${prompt}`;
     }
-  };
+
+    // 2) Chiamata a Gemini con fullPrompt
+    const reply = await fetchGemini(fullPrompt);
+    setResponse(reply);
+    addLog("✔ Gemini reply: " + reply.slice(0, 30) + "…");
+
+    // 3) Invia la risposta testuale agli occhiali
+    if (frame) {
+      setStatus("Invio testo a Frame…");
+      const msg = new TxPlainText(reply);
+      await frame.sendMessage(0x0a, msg.pack());
+      addLog("✔ testo inviato agli occhiali");
+      setStatus("Risposta mostrata sugli occhiali!");
+    } else {
+      setStatus("Frame non connesso — risposta solo su schermo");
+    }
+
+  } catch (e: any) {
+    const m = e.message || String(e);
+    addLog("✖ handleSend error: " + m);
+    setStatus("Errore send: " + m);
+  }
+};
+
 
   /** 4) Pulisci schermo e disconnessione (già li hai) */
   const handleClear = async () => {
