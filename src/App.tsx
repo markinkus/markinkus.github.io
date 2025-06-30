@@ -28,9 +28,7 @@ export default function App() {
   const [status, setStatus] = useState("Pronto!");
   const [logs, setLogs] = useState<string[]>([]);
 
-  const addLog = (msg: string) => {
-    setLogs((l) => [...l, msg]);
-  };
+  const addLog = (msg: string) => setLogs((l) => [...l, msg]);
 
   const handleConnect = async () => {
     setStatus("Connessione in corso…");
@@ -60,9 +58,9 @@ export default function App() {
       setFrame(f);
       setStatus("Occhiali connessi e Lua caricata!");
     } catch (err: any) {
-      const msg = err?.message || String(err);
-      addLog("✖ ERRORE: " + msg);
-      setStatus("Errore: " + msg);
+      const m = err?.message || String(err);
+      addLog("✖ ERRORE connect: " + m);
+      setStatus("Errore: " + m);
     }
   };
 
@@ -72,7 +70,7 @@ export default function App() {
     try {
       const reply = await fetchGemini(prompt);
       setResponse(reply);
-      addLog("✔ Gemini response: " + reply.slice(0, 30) + "…");
+      addLog("✔ Gemini: " + reply.slice(0, 30) + "…");
       if (frame) {
         setStatus("Invio a Frame…");
         addLog("• sendMessage");
@@ -84,9 +82,47 @@ export default function App() {
         setStatus("Frame non connesso — risposta solo schermo");
       }
     } catch (err: any) {
-      const msg = err?.message || String(err);
-      addLog("✖ ERRORE send: " + msg);
-      setStatus("Errore: " + msg);
+      const m = err?.message || String(err);
+      addLog("✖ ERRORE send: " + m);
+      setStatus("Errore: " + m);
+    }
+  };
+
+  const handleClear = async () => {
+    if (!frame) {
+      setStatus("Frame non connesso: niente da pulire");
+      return;
+    }
+    setStatus("Pulizia schermo occhiali…");
+    addLog("▶ handleClear start");
+    try {
+      const msg = new TxPlainText("");
+      await frame.sendMessage(0x0a, msg.pack());
+      addLog("✔ schermo pulito");
+      setStatus("Schermo occhiali pulito!");
+    } catch (err: any) {
+      const m = err?.message || String(err);
+      addLog("✖ ERRORE clear: " + m);
+      setStatus("Errore clear: " + m);
+    }
+  };
+
+  const handleDisconnect = async () => {
+    if (!frame) {
+      setStatus("Nessun frame da disconnettere");
+      return;
+    }
+    setStatus("Disconnessione in corso…");
+    addLog("▶ handleDisconnect start");
+    try {
+      await frame.disconnect();
+      addLog("✔ disconnected");
+      setFrame(null);
+      setStatus("Occhiali disconnessi");
+    } catch (err: any) {
+      const m = err?.message || String(err);
+      addLog("✖ ERRORE disconnect: " + m);
+      setStatus("Errore disconnect: " + m);
     }
   };
 
@@ -94,9 +130,17 @@ export default function App() {
     <div style={{ maxWidth: 600, margin: "auto", padding: 24 }}>
       <h1>Gemini → Frame</h1>
 
-      <button onClick={handleConnect}>Connetti a Frame &amp; Carica Lua</button>
-      <br />
+      <button onClick={handleConnect} style={{ marginRight: 8 }}>
+        Connetti a Frame &amp; Carica Lua
+      </button>
+      <button onClick={handleClear} disabled={!frame} style={{ marginRight: 8 }}>
+        Pulisci Schermo Occhiali
+      </button>
+      <button onClick={handleDisconnect} disabled={!frame}>
+        Disconnetti Occhiali
+      </button>
 
+      <br />
       <textarea
         rows={3}
         style={{ width: "100%", marginTop: 12 }}
@@ -105,7 +149,6 @@ export default function App() {
         placeholder="Scrivi qui il prompt per Gemini..."
       />
       <br />
-
       <button onClick={handleSend} style={{ marginTop: 12 }}>
         Invia Prompt a Gemini &amp; Frame
       </button>
