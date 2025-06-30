@@ -4,8 +4,11 @@ import {
   StdLua,
   TxPlainText,
   TxCaptureSettings,
+  TxSprite, 
+  TxImageSpriteBlock,
   RxPhoto
 } from "frame-msg";
+import { useEffect } from "react";
 import plainTextFrameApp from "../lua/plain_text_frame_app.lua?raw";
 
 const GEMINI_API_KEY = "AIzaSyCUspjopyRDqf8iR-ftL7UsPyaYfAt1p_M";
@@ -53,6 +56,19 @@ export default function App() {
   const [showPhoto, setShowPhoto] = useState(false);
   const [status, setStatus] = useState("Pronto!");
   const [logs, setLogs] = useState<string[]>([]);
+  const [heading, setHeading] = useState(0);        // bussola
+  const [mapLoading, setMapLoading] = useState(false);
+  
+  // 3) Installa il listener per la bussola del telefono:
+  useEffect(() => {
+    const onOrient = (e: DeviceOrientationEvent) => {
+      if (e.absolute && e.alpha != null) {
+        setHeading(e.alpha);  // e.alpha: gradi rispetto al Nord
+      }
+    };
+    window.addEventListener("deviceorientation", onOrient);
+    return () => window.removeEventListener("deviceorientation", onOrient);
+  }, []);
 
   const addLog = (m: string) =>
     setLogs((l) => [...l.slice(-19), m]);
@@ -190,6 +206,98 @@ export default function App() {
     }
   };
   
+  // 4) Aggiungi questa funzione handleShowMap **sotto** handleSend/handleCapture:
+  const handleShowMap = async () => {
+    if (!frame) return setStatus("Connetti prima gli occhiali!");
+    setStatus("Caricamento minimappa…");
+    setMapLoading(true);
+    addLog("▶ showMap");
+
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        try {
+          // coord fisse 5 decimali
+          const lat = pos.coords.latitude.toFixed(5);
+          const lng = pos.coords.longitude.toFixed(5);
+          addLog(`• coords ${lat},${lng}`);
+
+          // 1) Download static map OSM 200x200
+          const mapUrl = 
+            `https://staticmap.openstreetmap.de/staticmap.php` +
+            `?center=${lat},${lng}&zoom=15&size=200x200`;
+          const resp = await fetch(mapUrl);
+          if (!resp.ok) throw new Error("Errore download mappa");
+          const blob = await resp.blob();
+          addLog("✔ mappa scaricata");
+
+          // 2) Disegna mappa + freccia bussola su canvas
+          const img = await new Promise<HTMLImageElement>((res) => {
+            const i = new Image();
+            i.crossOrigin = "anonymous";
+            i.onload = () => res(i);
+            i.src = URL.createObjectURL(blob);
+          });
+          const canvas = document.createElement("canvas");
+          canvas.width = canvas.height = 200;
+          const ctx = canvas.getContext("2d")!;
+          ctx.drawImage(img, 0, 0, 200, 200);
+
+          // freccia rossa al centro che punta a `heading`
+          ctx.save();
+          ctx.translate(100, 100);
+          ctx.rotate((heading * Math.PI) / 180);
+          ctx.fillStyle = "rgba(255,0,0,0.8)";
+          ctx.beginPath();
+          ctx.moveTo(0, -60);
+          ctx.lineTo(10, -40);
+          ctx.lineTo(-10, -40);
+          ctx.closePath();
+          ctx.fill();
+          ctx.restore();
+          addLog("✔ overlay disegnata");
+
+         // 3) Canvas → Blob → ArrayBuffer
+         const finalBlob = await new Promise<Blob>((res) =>
+           canvas.toBlob((b) => b && res(b), "image/jpeg", 0.8)
+         );
+         const arrayBuffer = await finalBlob.arrayBuffer();
+         addLog("✔ overlay disegnata");
+       
+         // 4) Quantizza a 16 colori e crea TxSprite (await perché è async)
+         const sprite = await TxSprite.fromImageBytes(
+           arrayBuffer,    // ArrayBuffer dell'immagine
+           /* maxPixels */ undefined,
+           /* compress? */ false
+         );
+       
+         // 5) Suddividi in blocchi e invia: spriteLineHeight = 20px
+         const isb = new TxImageSpriteBlock(sprite, 20);
+
+        // 5) Invia su Frame in blocchi
+        setStatus("Invio minimappa…");
+        await frame.sendMessage(0x20, isb.pack());
+        // usa spriteLines invece di sprite_lines
+        for (const slice of isb.spriteLines) {
+          await frame.sendMessage(0x20, slice.pack());
+        }
+        addLog("✔ minimappa inviata");
+        setStatus("Minimappa mostrata sugli occhiali!");
+
+        } catch (err: any) {
+          addLog("✖ showMap error: " + err.message);
+          setStatus("Errore minimappa: " + err.message);
+        } finally {
+          setMapLoading(false);
+        }
+      },
+      (err) => {
+        addLog("✖ Geolocation error: " + err.message);
+        setStatus("Errore geolocazione: " + err.message);
+        setMapLoading(false);
+      }
+    );
+  };
+
  // STYLE OBJECTS
   const styles = {
     container: {
@@ -359,6 +467,17 @@ export default function App() {
           }}
         >
           Disconnetti
+        </button>
+
+          <button
+          onClick={handleShowMap}
+          disabled={!frame || mapLoading}
+          style={{
+            ...styles.btnSecondary,
+            ...(frame && !mapLoading ? {} : styles.btnDisabled),
+          }}
+        >
+          {mapLoading ? "Caricamento…" : "🗺️ Minimap"}
         </button>
       </div>
 
