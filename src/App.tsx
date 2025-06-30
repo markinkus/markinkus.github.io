@@ -18,32 +18,51 @@ async function fetchGemini(
     "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" +
     GEMINI_API_KEY;
 
-  // Costruisci l'array contents
-  const contents: any[] = [];
+  // Prepara l'array di parti
+  const parts: any[] = [];
 
   if (base64Image) {
-    // rimuovi header data URL se c'è
+    // Rimuovi l'header data URL
     const data = base64Image.replace(/^data:image\/\w+;base64,/, "");
-    contents.push({
-      inlineData: {
-        mimeType: "image/jpeg",
+    parts.push({
+      inline_data: {
+        mime_type: "image/jpeg",
         data: data,
       },
     });
   }
 
-  // Aggiungi il blocco testo
-  contents.push({ text: prompt });
+  // Infine il testo
+  parts.push({ text: prompt });
+
+  // Corpo secondo spec REST
+  const body = {
+    contents: [
+      {
+        parts: parts,
+      },
+    ],
+  };
 
   const res = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ contents }),
+    headers: {
+      "Content-Type": "application/json",
+      // a volte serve x-goog-api-key invece che query param, ma query param va bene
+      // "x-goog-api-key": GEMINI_API_KEY,
+    },
+    body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error("Errore chiamando Gemini: " + res.status);
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Errore chiamando Gemini: ${res.status} – ${errText}`);
+  }
+
   const data = await res.json();
   return data.candidates[0].content.parts[0].text;
 }
+
 
 export default function App() {
   const [frame, setFrame] = useState<FrameMsg | null>(null);
