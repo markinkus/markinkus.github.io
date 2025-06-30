@@ -231,31 +231,44 @@ export default function App() {
           const blob = await resp.blob();
           addLog("✔ mappa scaricata");
 
-          // 2) Disegna mappa + freccia bussola su canvas
-          const img = await new Promise<HTMLImageElement>((res) => {
-            const i = new Image();
-            i.crossOrigin = "anonymous";
-            i.onload = () => res(i);
-            i.src = URL.createObjectURL(blob);
-          });
-          const canvas = document.createElement("canvas");
-          canvas.width = canvas.height = 200;
-          const ctx = canvas.getContext("2d")!;
-          ctx.drawImage(img, 0, 0, 200, 200);
-
-          // freccia rossa al centro che punta a `heading`
-          ctx.save();
-          ctx.translate(100, 100);
-          ctx.rotate((heading * Math.PI) / 180);
-          ctx.fillStyle = "rgba(255,0,0,0.8)";
-          ctx.beginPath();
-          ctx.moveTo(0, -60);
-          ctx.lineTo(10, -40);
-          ctx.lineTo(-10, -40);
-          ctx.closePath();
-          ctx.fill();
-          ctx.restore();
-          addLog("✔ overlay disegnata");
+      
+      // 2) Disegna mappa + freccia bussola su canvas VIA DataURL
+      const dataUrl = await new Promise<string>((res, rej) => {
+        const fr = new FileReader();
+        fr.onload = () => res(fr.result as string);
+        fr.onerror = () => rej(new Error("FileReader error"));
+        fr.readAsDataURL(blob);
+      });
+      addLog("✔ blob→DataURL");
+      
+      // carica immagine da DataURL (no CORS issues)
+      const img = await new Promise<HTMLImageElement>((res, rej) => {
+        const i = new Image();
+        i.onload = () => res(i);
+        i.onerror = () => rej(new Error("image load failed"));
+        i.src = dataUrl;
+      });
+      addLog("✔ immagine caricata da DataURL");
+      
+      // ora disegniamo nel canvas
+      const canvas = document.createElement("canvas");
+      canvas.width = canvas.height = 200;
+      const ctx = canvas.getContext("2d")!;
+      ctx.drawImage(img, 0, 0, 200, 200);
+      
+      // freccia rossa al centro
+      ctx.save();
+      ctx.translate(100, 100);
+      ctx.rotate((heading * Math.PI) / 180);
+      ctx.fillStyle = "rgba(255,0,0,0.8)";
+      ctx.beginPath();
+      ctx.moveTo(0, -60);
+      ctx.lineTo(10, -40);
+      ctx.lineTo(-10, -40);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+      addLog("✔ overlay disegnata");
 
          // 3) Canvas → Blob → ArrayBuffer
          const finalBlob = await new Promise<Blob>((res) =>
@@ -298,6 +311,48 @@ export default function App() {
       }
     );
   };
+/** 5) Genera immagine con Pollinations e inviala su Frame */
+const handleGenerateImage = async () => {
+  if (!frame) {
+    setStatus("Connetti prima gli occhiali!");
+    return;
+  }
+  setStatus("Generazione immagine…");
+  addLog("▶ handleGenerateImage");
+
+  try {
+    // 1) Chiedi a Pollinations un’immagine basata sul prompt testuale
+    const pollUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt || "abstract art")}`;
+    const pollRes = await fetch(pollUrl);
+    if (!pollRes.ok) throw new Error("Errore Pollinations");
+    const imgBlob = await pollRes.blob();
+    addLog("✔ immagine generata");
+
+    // 2) (Opzionale) Mostra preview su pagina
+    const previewUrl = URL.createObjectURL(imgBlob);
+    setPhotoUrl(previewUrl);
+    setShowPhoto(true);
+
+    // 3) Carica i dati e crea ArrayBuffer
+    const arrayBuffer = await imgBlob.arrayBuffer();
+
+    // 4) Quantizza a 16 colori con TxSprite
+    const sprite = await TxSprite.fromImageBytes(arrayBuffer, /* maxPixels? */ undefined, /* compress? */ false);
+    const isb    = new TxImageSpriteBlock(sprite, /* spriteLineHeight= */ 20);
+
+    // 5) Invia in blocchi via BLE
+    setStatus("Invio immagine su Frame…");
+    await frame.sendMessage(0x20, isb.pack());
+    for (const slice of isb.spriteLines) {
+      await frame.sendMessage(0x20, slice.pack());
+    }
+    addLog("✔ immagine inviata agli occhiali");
+    setStatus("Immagine Pollinations mostrata su occhiali!");
+  } catch (err: any) {
+    addLog("✖ handleGenerateImage error: " + err.message);
+    setStatus("Errore generazione immagine: " + err.message);
+  }
+};
 
  // STYLE OBJECTS
   const styles = {
@@ -479,6 +534,16 @@ export default function App() {
           }}
         >
           {mapLoading ? "Caricamento…" : "🗺️ Minimap"}
+        </button>
+         <button
+          onClick={handleGenerateImage}
+          disabled={!frame || !prompt}
+          style={{
+            ...styles.btnPrimary,
+            ...(!frame || !prompt ? styles.btnDisabled : {})
+          }}
+        >
+          🎨 Genera Immagine
         </button>
       </div>
 
