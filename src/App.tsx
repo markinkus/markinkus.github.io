@@ -9,22 +9,40 @@ import {
 import plainTextFrameApp from "../lua/plain_text_frame_app.lua?raw";
 
 const GEMINI_API_KEY = "AIzaSyCUspjopyRDqf8iR-ftL7UsPyaYfAt1p_M";
-async function fetchGemini(prompt: string): Promise<string> {
+// 1) Estendi fetchGemini per supportare inlineData
+async function fetchGemini(
+  prompt: string,
+  base64Image?: string
+): Promise<string> {
   const url =
     "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" +
     GEMINI_API_KEY;
+
+  // Costruisci l'array contents
+  const contents: any[] = [];
+
+  if (base64Image) {
+    // rimuovi header data URL se c'è
+    const data = base64Image.replace(/^data:image\/\w+;base64,/, "");
+    contents.push({
+      inlineData: {
+        mimeType: "image/jpeg",
+        data: data,
+      },
+    });
+  }
+
+  // Aggiungi il blocco testo
+  contents.push({ text: prompt });
+
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
+    body: JSON.stringify({ contents }),
   });
   if (!res.ok) throw new Error("Errore chiamando Gemini: " + res.status);
   const data = await res.json();
-  try {
-    return data.candidates[0].content.parts[0].text;
-  } catch {
-    return JSON.stringify(data);
-  }
+  return data.candidates[0].content.parts[0].text;
 }
 
 export default function App() {
@@ -115,47 +133,47 @@ export default function App() {
 
   /** 3) Invio prompt + risposta sugli occhiali */
 const handleSend = async () => {
-  setStatus("Richiesta a Gemini…");
+  setStatus("Preparazione richiesta a Gemini…");
   addLog("▶ handleSend");
 
   try {
-    // 1) Se abbiamo una foto, recuperiamo il blob e facciamo DataURL
-    let fullPrompt = prompt;
+    let base64Image: string | undefined;
+
     if (photoUrl) {
-      addLog("• includo foto nel prompt");
+      addLog("• Preparo inlineData immagine");
+      // Scarica il blob e convertilo in DataURL
       const resp = await fetch(photoUrl);
       const blob = await resp.blob();
-      const dataUrl: string = await new Promise((resolve) => {
+      base64Image = await new Promise<string>((resolve) => {
         const reader = new FileReader();
         reader.onloadend = () => resolve(reader.result as string);
         reader.readAsDataURL(blob);
       });
-      // Prepara il prompt con immagine + testo
-      fullPrompt = `Descrivi questa immagine:\n${dataUrl}\n\nTesto aggiuntivo:\n${prompt}`;
     }
 
-    // 2) Chiamata a Gemini con fullPrompt
-    const reply = await fetchGemini(fullPrompt);
+    // Chiamata multimodale a Gemini
+    setStatus("Chiamata a Gemini (testo+immagine) …");
+    const reply = await fetchGemini(prompt, base64Image);
     setResponse(reply);
-    addLog("✔ Gemini reply: " + reply.slice(0, 30) + "…");
+    addLog("✔ Gemini reply ricevuta");
 
-    // 3) Invia la risposta testuale agli occhiali
+    // Manda il testo agli occhiali
     if (frame) {
-      setStatus("Invio testo a Frame…");
+      setStatus("Invio risposta a Frame…");
       const msg = new TxPlainText(reply);
       await frame.sendMessage(0x0a, msg.pack());
       addLog("✔ testo inviato agli occhiali");
       setStatus("Risposta mostrata sugli occhiali!");
     } else {
-      setStatus("Frame non connesso — risposta solo su schermo");
+      setStatus("Frame non connesso — visualizzo solo su schermo");
     }
-
   } catch (e: any) {
     const m = e.message || String(e);
     addLog("✖ handleSend error: " + m);
     setStatus("Errore send: " + m);
   }
 };
+
 
 
   /** 4) Pulisci schermo e disconnessione (già li hai) */
