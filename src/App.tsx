@@ -285,15 +285,26 @@ export default function App() {
     setStatus("Generazione immagine…");
     addLog("▶ handleGenerateImage");
     try {
+      
       const pollUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(
         prompt || "abstract art",
       )}`;
-      const imgBlob = await (await fetch(pollUrl)).blob();
+      const imgBlob = await fetch(pollUrl);
       const arrayBuffer = await imgBlob.arrayBuffer();
       const sprite = await TxSprite.fromImageBytes(arrayBuffer, 64000);
+// const bytes  = await (await fetch('/koala.jpg')).arrayBuffer();
+// const sprite = await TxSprite.fromImageBytes(bytes, 64000);
+// await frame.sendMessage(0x20, sprite.pack());
 
+//  const response = await fetch(new URL('./images/koala.jpg', import.meta.url));
+//     const imageBytes = new Uint8Array(await response.arrayBuffer());
+
+//     // display the source image on the web page
+//     displayImage(imageBytes, 'image/jpeg', 'image1');
+
+//     const sprite = await TxSprite.fromImageBytes(imageBytes);
       // preview
-      setPhotoUrl(URL.createObjectURL(imgBlob));
+      setPhotoUrl(URL.createObjectURL(new Blob([arrayBuffer], { type: "image/jpeg" })));
       setShowPhoto(true);
 
       setStatus("Invio immagine su Frame…");
