@@ -85,7 +85,8 @@ export default function App() {
       await f.uploadStdLuaLibs([
         StdLua.DataMin,
         StdLua.PlainTextMin,
-        StdLua.CameraMin
+        StdLua.CameraMin,
+        StdLua.ImageSpriteBlockMin
       ]);
       addLog("✔ libs loaded");
 
