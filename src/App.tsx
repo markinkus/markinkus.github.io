@@ -8,7 +8,7 @@ import {
   RxPhoto
 } from "frame-msg";
 import { useEffect } from "react";
-import plainTextFrameApp from "../lua/plain_text_frame_app.lua?raw";
+import markinoFrameApp from "../lua/markino_frame_app.lua?raw";
 
 const GEMINI_API_KEY = "AIzaSyCUspjopyRDqf8iR-ftL7UsPyaYfAt1p_M";
 
@@ -89,7 +89,7 @@ export default function App() {
       ]);
       addLog("✔ libs loaded");
 
-      await f.uploadFrameApp(plainTextFrameApp);
+      await f.uploadFrameApp(markinoFrameApp);
       addLog("✔ Lua script uploaded");
 
       await f.startFrameApp();
@@ -206,7 +206,7 @@ export default function App() {
     }
   };
   
-  // 4) Aggiungi questa funzione handleShowMap **sotto** handleSend/handleCapture:
+  // ───────────────────────────── mappe ────────────────────────────
   const handleShowMap = async () => {
     if (!frame) return setStatus("Connetti prima gli occhiali!");
     setStatus("Caricamento minimappa…");
@@ -216,74 +216,54 @@ export default function App() {
     navigator.geolocation.getCurrentPosition(
       async (pos) => {
         try {
-          // coord fisse 5 decimali
           const lat = pos.coords.latitude.toFixed(5);
           const lng = pos.coords.longitude.toFixed(5);
           addLog(`• coords ${lat},${lng}`);
 
-          // 1) Download static map OSM 200x200
-          const mapUrl = 
+          const url =
             `https://staticmap.openstreetmap.de/staticmap.php` +
             `?center=${lat},${lng}&zoom=15&size=200x200`;
-          const resp = await fetch(mapUrl);
-          if (!resp.ok) throw new Error("Errore download mappa");
-          const blob = await resp.blob();
-          addLog("✔ mappa scaricata");
+          const blob = await (await fetch(url)).blob();
 
-      
-      // 2) Disegna mappa + freccia bussola su canvas VIA DataURL
-      const dataUrl = await new Promise<string>((res, rej) => {
-        const fr = new FileReader();
-        fr.onload = () => res(fr.result as string);
-        fr.onerror = () => rej(new Error("FileReader error"));
-        fr.readAsDataURL(blob);
-      });
-      addLog("✔ blob→DataURL");
-      
-      // carica immagine da DataURL (no CORS issues)
-      const img = await new Promise<HTMLImageElement>((res, rej) => {
-        const i = new Image();
-        i.onload = () => res(i);
-        i.onerror = () => rej(new Error("image load failed"));
-        i.src = dataUrl;
-      });
-      addLog("✔ immagine caricata da DataURL");
-      
-      // ora disegniamo nel canvas
-      const canvas = document.createElement("canvas");
-      canvas.width = canvas.height = 200;
-      const ctx = canvas.getContext("2d")!;
-      ctx.drawImage(img, 0, 0, 200, 200);
-      
-      // freccia rossa al centro
-      ctx.save();
-      ctx.translate(100, 100);
-      ctx.rotate((heading * Math.PI) / 180);
-      ctx.fillStyle = "rgba(255,0,0,0.8)";
-      ctx.beginPath();
-      ctx.moveTo(0, -60);
-      ctx.lineTo(10, -40);
-      ctx.lineTo(-10, -40);
-      ctx.closePath();
-      ctx.fill();
-      ctx.restore();
-      addLog("✔ overlay disegnata");
+          // canvas con freccia bussola
+          const dataUrl = await new Promise<string>((res) => {
+            const fr = new FileReader();
+            fr.onload = () => res(fr.result as string);
+            fr.readAsDataURL(blob);
+          });
+          const img = await new Promise<HTMLImageElement>((res) => {
+            const i = new Image();
+            i.onload = () => res(i);
+            i.src = dataUrl;
+          });
+          const canvas = document.createElement("canvas");
+          canvas.width = canvas.height = 200;
+          const ctx = canvas.getContext("2d")!;
+          ctx.drawImage(img, 0, 0, 200, 200);
+          ctx.save();
+          ctx.translate(100, 100);
+          ctx.rotate((heading * Math.PI) / 180);
+          ctx.fillStyle = "rgba(255,0,0,0.8)";
+          ctx.beginPath();
+          ctx.moveTo(0, -60);
+          ctx.lineTo(10, -40);
+          ctx.lineTo(-10, -40);
+          ctx.closePath();
+          ctx.fill();
+          ctx.restore();
 
-         // 3) Canvas → Blob → ArrayBuffer
-         const finalBlob = await new Promise<Blob>((res) =>
-           canvas.toBlob((b) => b && res(b), "image/jpeg", 0.8)
-         );
-         const arrayBuffer = await finalBlob.arrayBuffer();
-         addLog("✔ overlay disegnata");
-       
-         const sprite = await TxSprite.fromImageBytes(arrayBuffer, 64000); // max 64 000 px ≈ 256×256
+          const finalBlob = await new Promise<Blob>((res) =>
+            canvas.toBlob((b) => b && res(b), "image/jpeg", 0.8),
+          );
+          const sprite = await TxSprite.fromImageBytes(
+            await finalBlob.arrayBuffer(),
+            64000, // ridimensiona se serve
+          );
 
-         setStatus("Invio minimappa…");
-
-        await frame.sendMessage(0x20, sprite.pack());
-        addLog("✔ minimappa inviata");
-        setStatus("Minimappa mostrata sugli occhiali!");
-
+          setStatus("Invio minimappa…");
+          await frame!.sendMessage(0x20, sprite.pack());
+          addLog("✔ minimappa inviata");
+          setStatus("Minimappa mostrata sugli occhiali!");
         } catch (err: any) {
           addLog("✖ showMap error: " + err.message);
           setStatus("Errore minimappa: " + err.message);
@@ -295,44 +275,36 @@ export default function App() {
         addLog("✖ Geolocation error: " + err.message);
         setStatus("Errore geolocazione: " + err.message);
         setMapLoading(false);
-      }
+      },
     );
   };
-/** 5) Genera immagine con Pollinations e inviala su Frame */
-const handleGenerateImage = async () => {
-  if (!frame) {
-    setStatus("Connetti prima gli occhiali!");
-    return;
-  }
-  setStatus("Generazione immagine…");
-  addLog("▶ handleGenerateImage");
 
-  try {
-    // 1) Chiedi a Pollinations un’immagine basata sul prompt testuale
-    const pollUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt || "abstract art")}`;
-    const pollRes = await fetch(pollUrl);
-    if (!pollRes.ok) throw new Error("Errore Pollinations");
-    const imgBlob = await pollRes.blob();
-    addLog("✔ immagine generata");
+  // ─────── prompt → Pollinations → sprite singolo ────────
+  const handleGenerateImage = async () => {
+    if (!frame) return setStatus("Connetti prima gli occhiali!");
+    setStatus("Generazione immagine…");
+    addLog("▶ handleGenerateImage");
+    try {
+      const pollUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(
+        prompt || "abstract art",
+      )}`;
+      const imgBlob = await (await fetch(pollUrl)).blob();
+      const arrayBuffer = await imgBlob.arrayBuffer();
+      const sprite = await TxSprite.fromImageBytes(arrayBuffer, 64000);
 
-    // 2) (Opzionale) Mostra preview su pagina
-    const previewUrl = URL.createObjectURL(imgBlob);
-    setPhotoUrl(previewUrl);
-    setShowPhoto(true);
+      // preview
+      setPhotoUrl(URL.createObjectURL(imgBlob));
+      setShowPhoto(true);
 
-    // 3) Carica i dati e crea ArrayBuffer
-    const arrayBuffer = await imgBlob.arrayBuffer();
-
-    const sprite = await TxSprite.fromImageBytes(arrayBuffer, 64000);
-    setStatus("Invio immagine su Frame…");
-    await frame.sendMessage(0x20, sprite.pack());
-    addLog("✔ immagine inviata agli occhiali");
-    setStatus("Immagine Pollinations mostrata su occhiali!");
-  } catch (err: any) {
-    addLog("✖ handleGenerateImage error: " + err.message);
-    setStatus("Errore generazione immagine: " + err.message);
-  }
-};
+      setStatus("Invio immagine su Frame…");
+      await frame.sendMessage(0x20, sprite.pack());
+      addLog("✔ immagine inviata agli occhiali");
+      setStatus("Immagine Pollinations mostrata su occhiali!");
+    } catch (err: any) {
+      addLog("✖ handleGenerateImage error: " + err.message);
+      setStatus("Errore generazione immagine: " + err.message);
+    }
+  };
 
  // STYLE OBJECTS
   const styles = {

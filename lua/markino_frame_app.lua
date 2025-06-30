@@ -46,6 +46,7 @@ while true do
   local ok, err = pcall(function()
     local n = data.process_raw_items()
     if n > 0 then
+      -- testo
       if data.app_data[TEXT_MSG] then
         wrapped = wrap(data.app_data[TEXT_MSG].string or '')
         page    = 1
@@ -58,9 +59,14 @@ while true do
       end
       if data.app_data[IMAGE_SPRITE_MSG] then
         local spr = data.app_data[IMAGE_SPRITE_MSG]
-        sprite.set_palette(spr.num_colors, spr.palette_data)
-        frame.display.bitmap(1, 1, spr.width, 2 ^ spr.bpp, 0, spr.pixel_data)
-        frame.display.show()
+        print("Sprite ricevuto", spr.width, spr.height)
+        if spr.width > 640 then
+          print("Sprite largo: "..spr.width)
+        else
+          sprite.set_palette(spr.num_colors, spr.palette_data)
+          frame.display.bitmap(1, 1, spr.width, 2 ^ spr.bpp, 0, spr.pixel_data)
+          frame.display.show()
+        end
         data.app_data[IMAGE_SPRITE_MSG] = nil
         collectgarbage('collect')
       end
