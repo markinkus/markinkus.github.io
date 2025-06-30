@@ -1,5 +1,11 @@
 import React, { useState } from "react";
-import { FrameMsg, StdLua, TxPlainText } from "frame-msg";
+import {
+  FrameMsg,
+  StdLua,
+  TxPlainText,
+  TxCaptureSettings,
+  RxPhoto
+} from "frame-msg";
 import plainTextFrameApp from "../lua/plain_text_frame_app.lua?raw";
 
 const GEMINI_API_KEY = "AIzaSyCUspjopyRDqf8iR-ftL7UsPyaYfAt1p_M";
@@ -25,132 +31,192 @@ export default function App() {
   const [frame, setFrame] = useState<FrameMsg | null>(null);
   const [prompt, setPrompt] = useState("");
   const [response, setResponse] = useState("");
+  const [photoUrl, setPhotoUrl] = useState<string | null>(null);
   const [status, setStatus] = useState("Pronto!");
   const [logs, setLogs] = useState<string[]>([]);
 
-  const addLog = (msg: string) => setLogs((l) => [...l, msg]);
+  const addLog = (m: string) => setLogs(l => [...l, m]);
 
+  /** 1) Connessione + upload Lua unificato */
   const handleConnect = async () => {
     setStatus("Connessione in corso…");
-    addLog("▶ handleConnect start");
+    addLog("▶ handleConnect");
     try {
-      addLog("• new FrameMsg()");
       const f = new FrameMsg();
-
       addLog("• connecting…");
       await f.connect();
       addLog("✔ connected");
-      setStatus("Frame connesso, carico librerie…");
 
-      addLog("• uploadStdLuaLibs");
-      await f.uploadStdLuaLibs([StdLua.DataMin, StdLua.PlainTextMin]);
+      setStatus("Carico librerie…");
+      await f.uploadStdLuaLibs([
+        StdLua.DataMin,
+        StdLua.PlainTextMin,
+        StdLua.CameraMin,    // aggiungi camera support
+      ]);
       addLog("✔ libs loaded");
-      setStatus("Lib caricate, invio app Lua…");
 
-      addLog("• uploadFrameApp");
+      setStatus("Upload app Lua…");
       await f.uploadFrameApp(plainTextFrameApp);
-      addLog("✔ Lua uploaded");
-      setStatus("App Lua inviata, avvio…");
+      addLog("✔ Lua script uploaded");
 
-      addLog("• startFrameApp");
+      setStatus("Avvio app Lua…");
       await f.startFrameApp();
-      addLog("✔ app running");
+      addLog("✔ app Lua running");
+
       setFrame(f);
-      setStatus("Occhiali connessi e Lua caricata!");
-    } catch (err: any) {
-      const m = err?.message || String(err);
-      addLog("✖ ERRORE connect: " + m);
-      setStatus("Errore: " + m);
+      setStatus("Occhiali pronti!");
+    } catch (e: any) {
+      const msg = e.message || String(e);
+      addLog("✖ handleConnect error: " + msg);
+      setStatus("Errore connect: " + msg);
     }
   };
 
+  /** 2) Cattura foto e preview */
+  const handleCapture = async () => {
+    if (!frame) {
+      setStatus("Connetti prima gli occhiali!");
+      return;
+    }
+    setStatus("Cattura foto…");
+    addLog("▶ handleCapture");
+    try {
+      // Attacca il ricevitore foto
+      const rx = new RxPhoto({});
+      const q = await rx.attach(frame);
+      addLog("• RxPhoto attached");
+
+      // Manda la richiesta di cattura (msgCode 0x0d)
+      await frame.sendMessage(
+        0x0d,
+        new TxCaptureSettings(720).pack()
+      );
+      addLog("• capture request sent");
+
+      // Aspetta il JPEG
+      const jpeg = await q.get();
+      addLog("✔ JPEG received");
+
+      rx.detach(frame);
+      addLog("• RxPhoto detached");
+
+      // Crea URL per preview
+      const blob = new Blob([jpeg], { type: "image/jpeg" });
+      const url = URL.createObjectURL(blob);
+      setPhotoUrl(url);
+
+      setStatus("Foto catturata!");
+    } catch (e: any) {
+      const msg = e.message || String(e);
+      addLog("✖ handleCapture error: " + msg);
+      setStatus("Errore capture: " + msg);
+    }
+  };
+
+  /** 3) Invio prompt + risposta sugli occhiali */
   const handleSend = async () => {
-    setStatus("Richiesta a Gemini…");
-    addLog("▶ handleSend start");
+    setStatus("Richiesta Gemini…");
+    addLog("▶ handleSend");
     try {
       const reply = await fetchGemini(prompt);
       setResponse(reply);
-      addLog("✔ Gemini: " + reply.slice(0, 30) + "…");
+      addLog("✔ Gemini reply: " + reply.slice(0, 30) + "…");
+
       if (frame) {
-        setStatus("Invio a Frame…");
-        addLog("• sendMessage");
+        setStatus("Invio testo a Frame…");
         const msg = new TxPlainText(reply);
         await frame.sendMessage(0x0a, msg.pack());
         addLog("✔ sent to Frame");
-        setStatus("Risposta mostrata sugli occhiali!");
+        setStatus("Testo mostrato sugli occhiali!");
       } else {
-        setStatus("Frame non connesso — risposta solo schermo");
+        setStatus("Frame non connesso");
       }
-    } catch (err: any) {
-      const m = err?.message || String(err);
-      addLog("✖ ERRORE send: " + m);
-      setStatus("Errore: " + m);
+    } catch (e: any) {
+      const msg = e.message || String(e);
+      addLog("✖ handleSend error: " + msg);
+      setStatus("Errore send: " + msg);
     }
   };
 
+  /** 4) Pulisci schermo e disconnessione (già li hai) */
   const handleClear = async () => {
-    if (!frame) {
-      setStatus("Frame non connesso: niente da pulire");
-      return;
-    }
-    setStatus("Pulizia schermo occhiali…");
-    addLog("▶ handleClear start");
+    if (!frame) return setStatus("Nessun occhiale");
+    setStatus("Pulisco occhiali…");
+    addLog("▶ handleClear");
     try {
-      const msg = new TxPlainText("");
-      await frame.sendMessage(0x0a, msg.pack());
-      addLog("✔ schermo pulito");
-      setStatus("Schermo occhiali pulito!");
-    } catch (err: any) {
-      const m = err?.message || String(err);
-      addLog("✖ ERRORE clear: " + m);
-      setStatus("Errore clear: " + m);
+      await frame.sendMessage(0x0a, new TxPlainText("").pack());
+      addLog("✔ clear sent");
+      setStatus("Schermo pulito");
+    } catch (e: any) {
+      const msg = e.message || String(e);
+      addLog("✖ handleClear error: " + msg);
+      setStatus("Errore clear");
     }
   };
-
   const handleDisconnect = async () => {
-    if (!frame) {
-      setStatus("Nessun frame da disconnettere");
-      return;
-    }
-    setStatus("Disconnessione in corso…");
-    addLog("▶ handleDisconnect start");
+    if (!frame) return setStatus("Nessun occhiale");
+    setStatus("Disconnessione…");
+    addLog("▶ handleDisconnect");
     try {
       await frame.disconnect();
       addLog("✔ disconnected");
       setFrame(null);
       setStatus("Occhiali disconnessi");
-    } catch (err: any) {
-      const m = err?.message || String(err);
-      addLog("✖ ERRORE disconnect: " + m);
-      setStatus("Errore disconnect: " + m);
+    } catch (e: any) {
+      const msg = e.message || String(e);
+      addLog("✖ handleDisconnect error: " + msg);
+      setStatus("Errore disconnect");
     }
   };
 
   return (
     <div style={{ maxWidth: 600, margin: "auto", padding: 24 }}>
-      <h1>Gemini → Frame</h1>
+      <h1>Gemini + Foto → Frame</h1>
 
       <button onClick={handleConnect} style={{ marginRight: 8 }}>
-        Connetti a Frame &amp; Carica Lua
+        Connetti &amp; Carica Lua
       </button>
-      <button onClick={handleClear} disabled={!frame} style={{ marginRight: 8 }}>
-        Pulisci Schermo Occhiali
+      <button
+        onClick={handleCapture}
+        disabled={!frame}
+        style={{ marginRight: 8 }}
+      >
+        Cattura Foto
+      </button>
+      <button
+        onClick={handleClear}
+        disabled={!frame}
+        style={{ marginRight: 8 }}
+      >
+        Pulisci Schermo
       </button>
       <button onClick={handleDisconnect} disabled={!frame}>
-        Disconnetti Occhiali
+        Disconnetti
       </button>
 
-      <br />
+      {photoUrl && (
+        <img
+          src={photoUrl}
+          alt="Preview"
+          style={{
+            width: "100%",
+            marginTop: 12,
+            border: "1px solid #ccc",
+            borderRadius: 8,
+          }}
+        />
+      )}
+
       <textarea
         rows={3}
         style={{ width: "100%", marginTop: 12 }}
         value={prompt}
         onChange={(e) => setPrompt(e.target.value)}
-        placeholder="Scrivi qui il prompt per Gemini..."
+        placeholder="Scrivi il prompt…"
       />
-      <br />
+
       <button onClick={handleSend} style={{ marginTop: 12 }}>
-        Invia Prompt a Gemini &amp; Frame
+        Invia a Gemini &amp; Frame
       </button>
 
       <div style={{ marginTop: 12, minHeight: 24 }}>
