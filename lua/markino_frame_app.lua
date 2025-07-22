@@ -60,13 +60,10 @@ while true do
       if data.app_data[IMAGE_SPRITE_MSG] then
         local spr = data.app_data[IMAGE_SPRITE_MSG]
         print("Sprite ricevuto", spr.width, spr.height)
-        if spr.width > 640 then
-          print("Sprite largo: "..spr.width)
-        else
-          sprite.set_palette(spr.num_colors, spr.palette_data)
-          frame.display.bitmap(1, 1, spr.width, 2 ^ spr.bpp, 0, spr.pixel_data)
-          frame.display.show()
-        end
+        sprite.set_palette(spr.num_colors, spr.palette_data)
+        frame.display.bitmap(1, 1, spr.width, 2 ^ spr.bpp, 0, spr.pixel_data)
+        frame.display.show()
+        print("Sprite visualizzato")
         data.app_data[IMAGE_SPRITE_MSG] = nil
         collectgarbage('collect')
       end
