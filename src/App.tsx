@@ -46,7 +46,6 @@ export default function App() {
   const [showMedia, setShowMedia] = useState(false);
   const [status, setStatus] = useState("Pronto!");
   const [logs, setLogs] = useState<string[]>([]);
-  const [battMem, setBattMem] = useState<string | null>(null);
   const [mapLoading, setMapLoading] = useState(false);
   const [heading, setHeading] = useState(0);
 
@@ -76,13 +75,6 @@ export default function App() {
       ]);
       await f.uploadFrameApp(markinoFrameApp);
       await f.startFrameApp();
-
-      // battery/mem – sendLua può ritornare void
-      const maybeBm = (await f.sendLua('print(frame.battery_level() .. " / " .. collectgarbage("count"))', { awaitPrint: true })) as string | void;
-      if (typeof maybeBm === "string") {
-        setBattMem(maybeBm);
-        addLog("Batt/Mem: " + maybeBm);
-      }
 
       setFrame(f);
       setStatus("Occhiali pronti!");
@@ -179,7 +171,6 @@ export default function App() {
       await frame.stopFrameApp();
       await frame.disconnect();
       setFrame(null);
-      setBattMem(null);
       setStatus("Disconnesso");
     } catch (e: any) {
       setStatus("Errore disconnect: " + e.message);
@@ -220,7 +211,7 @@ export default function App() {
       <textarea rows={3} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Prompt…" style={styles.textarea} />
       <button onClick={handleSend} disabled={!frame && !prompt} style={btn(styles.sendButton, !frame && !prompt)}>Invia a Gemini & Frame</button>
 
-      <div style={styles.status}><b>Stato:</b> {status} {battMem && `| 🔋 ${battMem}`}</div>
+      <div style={styles.status}>{status}</div>
       <pre style={styles.logs}>{logs.join("\n")}</pre>
       <div style={styles.response}>
         <b>Risposta Gemini:</b>
