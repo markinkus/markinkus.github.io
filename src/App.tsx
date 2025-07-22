@@ -38,18 +38,17 @@ async function fetchGemini(prompt: string, base64Image?: string): Promise<string
 }
 
 export default function App() {
-  /* ─────────────── UI state ─────────────── */
   const [frame, setFrame] = useState<FrameMsg | null>(null);
   const [prompt, setPrompt] = useState("");
   const [response, setResponse] = useState("");
-  const [photoUrl, setPhotoUrl] = useState<string | null>(null); // originale
-  const [spriteUrl, setSpriteUrl] = useState<string | null>(null); // quantizzato PNG
+  const [photoUrl, setPhotoUrl] = useState<string | null>(null);
+  const [spriteUrl, setSpriteUrl] = useState<string | null>(null);
   const [showMedia, setShowMedia] = useState(false);
   const [status, setStatus] = useState("Pronto!");
   const [logs, setLogs] = useState<string[]>([]);
-  const [heading, setHeading] = useState(0);
-  const [mapLoading, setMapLoading] = useState(false);
   const [battMem, setBattMem] = useState<string | null>(null);
+  const [mapLoading, setMapLoading] = useState(false);
+  const [heading, setHeading] = useState(0);
 
   const addLog = (m: string) => setLogs((l) => [...l.slice(-19), m]);
 
@@ -64,38 +63,32 @@ export default function App() {
 
   /* ─────────────── Connect & init ─────────────── */
   const handleConnect = async () => {
-    setStatus("Connessione in corso…");
-    addLog("▶ handleConnect");
+    setStatus("Connessione…");
     try {
       const f = new FrameMsg();
       await f.connect();
-      addLog("✔ connected");
-
       f.attachPrintResponseHandler((m) => addLog("[Frame] " + m));
-
       await f.uploadStdLuaLibs([
         StdLua.DataMin,
         StdLua.PlainTextMin,
         StdLua.CameraMin,
         StdLua.SpriteMin,
       ]);
-      addLog("✔ libs loaded");
-
       await f.uploadFrameApp(markinoFrameApp);
-      addLog("✔ Lua script uploaded");
       await f.startFrameApp();
-      addLog("✔ app Lua running");
 
-      // batteria / memoria
-      const bm = await f.sendLua('print(frame.battery_level() .. " / " .. collectgarbage("count"))', { awaitPrint: true });
-      setBattMem(bm);
-      addLog("Batt/Mem: " + bm);
+      // battery/mem – sendLua può ritornare void
+      const maybeBm = (await f.sendLua('print(frame.battery_level() .. " / " .. collectgarbage("count"))', { awaitPrint: true })) as string | void;
+      if (typeof maybeBm === "string") {
+        setBattMem(maybeBm);
+        addLog("Batt/Mem: " + maybeBm);
+      }
 
       setFrame(f);
       setStatus("Occhiali pronti!");
     } catch (e: any) {
-      addLog("✖ connect: " + e.message);
       setStatus("Errore connect: " + e.message);
+      addLog("✖ connect: " + e.message);
     }
   };
 
@@ -125,30 +118,24 @@ export default function App() {
   const handleGenerateImage = async () => {
     if (!frame) return setStatus("Connetti prima gli occhiali!");
     setStatus("Generazione immagine…");
-    addLog("▶ handleGenerateImage");
     try {
-      const pollUrl =
-        `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt || "abstract art")}`;
-      const resp = await fetch(pollUrl);
-      const imgBytes = await resp.arrayBuffer();
-
-      // preview originale
-      const origUrl = blobUrl(imgBytes);
-      setPhotoUrl(origUrl);
+      const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt || "abstract art")}`;
+      const bytes = await (await fetch(url)).arrayBuffer();
+      const imgUrl = blobUrl(bytes);
+      setPhotoUrl(imgUrl);
       setShowMedia(true);
 
-      // converte in sprite e preview PNG
-      const sprite = await TxSprite.fromImageBytes(imgBytes);
-      const pngUrl = blobUrl(sprite.toPngBytes(), "image/png");
-      setSpriteUrl(pngUrl);
+      const sprite = await TxSprite.fromImageBytes(bytes);
+      // toPngBytes non è tipizzato nelle declarations → cast any
+      const pngBytes: Uint8Array | undefined = (sprite as any).toPngBytes?.();
+      if (pngBytes) setSpriteUrl(blobUrl(pngBytes, "image/png"));
 
-      setStatus("Invio sprite su Frame…");
       await frame.sendMessage(0x20, sprite.pack());
-      addLog("✔ sprite inviato agli occhiali");
-      setStatus("Immagine Pollinations mostrata!");
+      setStatus("Sprite mostrato!");
+      addLog("✔ sprite inviato");
     } catch (e: any) {
+      setStatus("Errore generazione: " + e.message);
       addLog("✖ generateImage: " + e.message);
-      setStatus("Errore generazione immagine: " + e.message);
     }
   };
 
