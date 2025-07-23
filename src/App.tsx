@@ -224,34 +224,46 @@ export default function App() {
     }
   };
   /* ─────────────── MiniMap ─────────────── */
-  const sendMapToFrame = async () => {
-    if (!frame || !mapRef.current) return;
-    setStatus("Invio mappa…");
-    try {
-      const mapEl = mapRef.current;
-      const canvas = await html2canvas(mapEl);
-      const ctx = canvas.getContext("2d")!;
-      ctx.save();
-      ctx.translate(canvas.width / 2, canvas.height / 2);
-      ctx.rotate((heading * Math.PI) / 180);
-      ctx.fillStyle = "rgba(255,0,0,0.8)";
-      ctx.beginPath();
-      ctx.moveTo(0, -30);
-      ctx.lineTo(10, -10);
-      ctx.lineTo(-10, -10);
-      ctx.closePath();
-      ctx.fill();
-      ctx.restore();
-      const blob = await new Promise<Blob>((res) => canvas.toBlob((b) => res(b!), "image/jpeg"));
-      const sprite = await TxSprite.fromImageBytes(await blob.arrayBuffer(), 20000);
-      await frame.sendMessage(0x20, sprite.pack());
-      addLog("✔ mappa inviata agli occhiali");
-      setStatus("Mappa aggiornata!");
-    } catch (e: any) {
-      addLog("✖ map error: " + e.message);
-      setStatus("Errore mappa: " + e.message);
-    }
-  };
+const sendMapToFrame = async () => {
+  if (!frame) return setStatus("Connetti prima gli occhiali!");
+  if (!mapRef.current) return setStatus("Mappa non trovata");
+
+  setStatus("Generazione snapshot mappa…");
+  addLog("▶ sendMapToFrame");
+
+  try {
+    const canvas = await html2canvas(mapRef.current, {
+      useCORS: true,
+      allowTaint: false,
+      backgroundColor: "#ffffff",
+      logging: true
+    });
+
+    // sicurezza: aspetta 100ms per garantire rendering
+    await new Promise((res) => setTimeout(res, 100));
+
+    const blob: Blob = await new Promise((resolve, reject) => {
+      canvas.toBlob((b) => {
+        if (b) resolve(b);
+        else reject(new Error("toBlob fallito: canvas è nullo"));
+      }, "image/jpeg", 0.9);
+    });
+
+    const sprite = await TxSprite.fromImageBytes(
+      await blob.arrayBuffer(),
+      25000, // sprite max pixels
+      true   // compress
+    );
+
+    await frame.sendMessage(0x20, sprite.pack());
+    addLog("✔ snapshot mappa inviata");
+    setStatus("Mappa mostrata sugli occhiali!");
+  } catch (e: any) {
+    addLog("✖ map error: " + e.message);
+    setStatus("Errore mappa: " + e.message);
+  }
+};
+
 
   const startAutoUpdate = () => {
     if (autoUpdateRef.current) return;
