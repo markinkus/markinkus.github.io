@@ -235,9 +235,16 @@ export default function App() {
           ctx.fill();
           ctx.restore();
 
-          const finalBlob = await new Promise<Blob>((res) =>
-            canvas.toBlob((b) => b && res(b), "image/jpeg", 0.8)
-          );
+          const finalBlob = await new Promise<Blob>((resolve, reject) => {
+            if (!canvas.toBlob) {
+              return reject(new Error("toBlob non supportato"));
+            }
+            canvas.toBlob((b) => {
+              if (b) resolve(b);
+              else reject(new Error("toBlob fallito"));
+            }, "image/jpeg", 0.8);
+          });
+
           const sprite = await TxSprite.fromImageBytes(
             await finalBlob.arrayBuffer(),
             20000
