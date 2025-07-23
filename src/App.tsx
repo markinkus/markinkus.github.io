@@ -8,6 +8,9 @@ import {
   RxPhoto,
 } from "frame-msg";
 import markinoFrameApp from "../lua/markino_frame_app.lua?raw";
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
+import html2canvas from "html2canvas";
 
 const GEMINI_API_KEY = "AIzaSyCUspjopyRDqf8iR-ftL7UsPyaYfAt1p_M";
 
@@ -50,8 +53,9 @@ export default function App() {
   const [heading, setHeading] = useState(0);
   const [mapLoading, setMapLoading] = useState(false);
   const [pos, setPos] = useState<{ lat: number; lng: number } | null>(null);
-  const [zoom, setZoom] = useState(1.5);
-  const refreshRef = useRef<NodeJS.Timeout | null>(null);
+  const mapRef = useRef<HTMLDivElement>(null);
+  const leafletMap = useRef<L.Map | null>(null);
+  const autoUpdateRef = useRef<NodeJS.Timeout | null>(null);
 
   const poiList = [
     { name: "Bar", lat: 40.8367, lng: 16.5931 },
@@ -75,7 +79,22 @@ export default function App() {
     });
     return () => navigator.geolocation.clearWatch(geoId);
   }, []);
-
+  useEffect(() => {
+    if (mapRef.current && !leafletMap.current) {
+      leafletMap.current = L.map(mapRef.current, {
+        center: [40.8362, 16.5936],
+        zoom: 16,
+        zoomControl: false,
+        attributionControl: false,
+      });
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        crossOrigin: true,
+      }).addTo(leafletMap.current);
+    }
+    if (leafletMap.current && pos) {
+      leafletMap.current.setView([pos.lat, pos.lng]);
+    }
+  }, [pos]);
   /* ─────────────── Connect & init ─────────────── */
   const handleConnect = async () => {
     setStatus("Connessione in corso…");
@@ -205,80 +224,47 @@ export default function App() {
     }
   };
   /* ─────────────── MiniMap ─────────────── */
-  const drawMinimap = async () => {
-    const canvas = document.createElement("canvas");
-    canvas.width = canvas.height = 240;
-    const ctx = canvas.getContext("2d")!;
-
-    ctx.fillStyle = "#fdfdfd";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.strokeStyle = "#444";
-    ctx.lineWidth = 2;
-    ctx.strokeRect(20, 20, 200, 200);
-
-    if (pos) {
-      const centerX = 120, centerY = 120;
-
+  const sendMapToFrame = async () => {
+    if (!frame || !mapRef.current) return;
+    setStatus("Invio mappa…");
+    try {
+      const mapEl = mapRef.current;
+      const canvas = await html2canvas(mapEl);
+      const ctx = canvas.getContext("2d")!;
       ctx.save();
-      ctx.translate(centerX, centerY);
+      ctx.translate(canvas.width / 2, canvas.height / 2);
       ctx.rotate((heading * Math.PI) / 180);
-      ctx.fillStyle = "#f00";
+      ctx.fillStyle = "rgba(255,0,0,0.8)";
       ctx.beginPath();
-      ctx.moveTo(0, -40);
-      ctx.lineTo(8, -20);
-      ctx.lineTo(-8, -20);
+      ctx.moveTo(0, -30);
+      ctx.lineTo(10, -10);
+      ctx.lineTo(-10, -10);
       ctx.closePath();
       ctx.fill();
       ctx.restore();
-
-      ctx.fillStyle = "#000";
-      ctx.font = "12px sans-serif";
-      ctx.fillText(pos.lat.toFixed(4) + "," + pos.lng.toFixed(4), 10, 230);
-
-      ctx.fillStyle = "#00f";
-      poiList.forEach((poi) => {
-        const dx = (poi.lng - pos.lng) * 100000 * zoom;
-        const dy = (poi.lat - pos.lat) * -100000 * zoom;
-        const x = centerX + dx;
-        const y = centerY + dy;
-        if (x >= 20 && x <= 220 && y >= 20 && y <= 220) {
-          ctx.beginPath();
-          ctx.arc(x, y, 4, 0, 2 * Math.PI);
-          ctx.fill();
-          ctx.fillText(poi.name, x + 6, y);
-        }
-      });
-    }
-
-    const blob = await new Promise<Blob>((res) => canvas.toBlob((b) => res(b!), "image/jpeg"));
-    return TxSprite.fromImageBytes(await blob.arrayBuffer(), 20000);
-  };
-
-  const handleShowMiniMap = async () => {
-    if (!frame) return;
-    setStatus("Aggiornamento mappa…");
-    addLog("▶ handleShowMiniMap");
-    try {
-      const sprite = await drawMinimap();
+      const blob = await new Promise<Blob>((res) => canvas.toBlob((b) => res(b!), "image/jpeg"));
+      const sprite = await TxSprite.fromImageBytes(await blob.arrayBuffer(), 20000);
       await frame.sendMessage(0x20, sprite.pack());
-      addLog("✔ minimappa aggiornata");
-      setStatus("Minimappa aggiornata!");
+      addLog("✔ mappa inviata agli occhiali");
+      setStatus("Mappa aggiornata!");
     } catch (e: any) {
-      addLog("✖ minimap error: " + e.message);
-      setStatus("Errore minimappa: " + e.message);
+      addLog("✖ map error: " + e.message);
+      setStatus("Errore mappa: " + e.message);
     }
   };
 
-  const startAutoRefresh = () => {
-    if (refreshRef.current) clearInterval(refreshRef.current);
-    refreshRef.current = setInterval(handleShowMiniMap, 5000);
-    addLog("▶ auto-refresh attivo");
+  const startAutoUpdate = () => {
+    if (autoUpdateRef.current) return;
+    autoUpdateRef.current = setInterval(sendMapToFrame, 5000);
+    addLog("▶ Auto-update ON");
   };
 
-  const stopAutoRefresh = () => {
-    if (refreshRef.current) clearInterval(refreshRef.current);
-    refreshRef.current = null;
-    addLog("⏹️ auto-refresh fermato");
+  const stopAutoUpdate = () => {
+    if (autoUpdateRef.current) {
+      clearInterval(autoUpdateRef.current);
+      autoUpdateRef.current = null;
+      addLog("■ Auto-update OFF");
+    }
   };
 
 
@@ -295,11 +281,15 @@ export default function App() {
           {showMedia ? "Nascondi Media" : "Mostra Media"}
         </button>
         <button onClick={handleClear} disabled={!frame} style={btn(styles.btnSecondary, !frame)}>Pulisci Schermo</button>
-        <button onClick={handleShowMiniMap} disabled={!frame}>📍 Mappa</button>
-        <button onClick={() => setZoom((z) => Math.min(z + 0.5, 5))}>🔍 Zoom +</button>
-        <button onClick={() => setZoom((z) => Math.max(z - 0.5, 0.5))}>🔎 Zoom -</button>
-        <button onClick={startAutoRefresh} disabled={!frame}>▶ Auto-Refresh</button>
-        <button onClick={stopAutoRefresh}>⏹ Stop</button>
+      <div style={{ marginBottom: 8 }}>
+        <button onClick={handleConnect}>🔌 Connetti</button>
+        <button onClick={sendMapToFrame} disabled={!frame}>🗺️ Mostra Mappa</button>
+        <button onClick={startAutoUpdate}>▶ Auto</button>
+        <button onClick={stopAutoUpdate}>■ Stop</button>
+      </div>
+      <div style={{ display: "none" }}>
+        <div id="map" ref={mapRef} style={{ width: 240, height: 240 }}></div>
+      </div>
         <button onClick={handleDisconnect} disabled={!frame} style={btn(styles.btnSecondary, !frame)}>Disconnetti</button>
         <button onClick={handleGenerateImage} disabled={!frame || !prompt} style={btn(styles.btnPrimary, !frame || !prompt)}>🎨 Genera Immagine</button>
       </div>

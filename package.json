@@ -10,10 +10,13 @@
   "dependencies": {
     "@vitejs/plugin-react": "^4.6.0",
     "frame-msg": "^0.2.3",
+    "html2canvas": "^1.4.1",
+    "leaflet": "^1.9.4",
     "react": "^18.0.0",
     "react-dom": "^18.0.0"
   },
   "devDependencies": {
+    "@types/leaflet": "^1.9.20",
     "@types/react": "^18.0.0",
     "@types/react-dom": "^18.0.0",
     "typescript": "^5.0.0",
