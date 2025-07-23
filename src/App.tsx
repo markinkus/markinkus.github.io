@@ -170,28 +170,36 @@ export default function App() {
 
   // ───────── Snapshot Mappa ─────────
   const sendMapToFrame = async () => {
-    if (!frame || !mapRef.current) return setStatus("Init mappa o frame");
-    setStatus("Snap mappa…");
+    if (!frame || !mapRef.current) {
+      setStatus("Errore: init mappa o frame");
+      return;
+    }
+    setStatus("📸 Snap mappa…");
     addLog("▶ sendMapToFrame");
-   leafletImage(leafletMap.current!, (err: any, canvas: HTMLCanvasElement) => {
-     if (err) {
-       addLog("✖ leaflet-image error: " + err);
-       setStatus("Errore snapshot");
-       return;
-     }
-     canvas.toBlob(async (blob) => {
-       if (!blob) {
-         addLog("✖ toBlob fallito");
-         setStatus("Errore blob");
-         return;
-       }
-       const arr = await blob.arrayBuffer();
-       const sprite = await TxSprite.fromImageBytes(arr, 35000);
-       await frame.sendMessage(0x20, sprite.pack());
-       addLog("✔ mappa inviata");
-       setStatus("Mappa mostrata!");
-     }, "image/jpeg", 0.9);
-   });
+
+    try {
+      // catturo TUTTO quello che vedi nella <div ref={mapRef}>
+      const canvas = await html2canvas(mapRef.current!, {
+        useCORS: true,
+        allowTaint: false,
+        backgroundColor: "#111827",  // match dark theme
+        scale: 2                      // più risoluzione
+      });
+
+      // trasformo in blob → arrayBuffer → TxSprite
+      const blob: Blob = await new Promise((res, rej) =>
+        canvas.toBlob(b => b ? res(b) : rej("toBlob fallito"), "image/jpeg", 0.9)
+      );
+      const arr = await blob.arrayBuffer();
+      const sprite = await TxSprite.fromImageBytes(arr, 40000);
+
+      await frame.sendMessage(0x20, sprite.pack());
+      addLog("✔ mappa inviata");
+      setStatus("Mappa mostrata!");
+    } catch (e: any) {
+      addLog("✖ map error: " + e);
+      setStatus("Errore mappa");
+    }
   };
 
   // ───────── Auto‐update ogni 5s ─────────
@@ -257,7 +265,7 @@ export default function App() {
       setPhotoUrl(origUrl);
       setShowMedia(true);
 
-      const sprite = await TxSprite.fromImageBytes(imgBytes, 45000);
+      const sprite = await TxSprite.fromImageBytes(imgBytes, 40000);
       // toPngBytes non è tipizzato nelle declarations → cast any
       const pngBytes: Uint8Array | undefined = (sprite as any).toPngBytes?.();
       if (pngBytes) setSpriteUrl(blobUrl(pngBytes, "image/png"));
@@ -328,7 +336,7 @@ export default function App() {
     // batteria/memoria
     const battMem = await frame.sendLua(
       'print(frame.battery_level() .. " / " .. collectgarbage("count"))',
-      { showMe: true }
+      { awaitPrint: true }
     );
     // meteo
     let weatherStr = "meteo sconosciuto";
@@ -340,10 +348,10 @@ export default function App() {
         const wj = await wres.json();
         const cw = wj.current_weather;
         weatherStr = `${cw.temperature}°C, vento ${cw.windspeed} km/h`;
-      } catch {}
+      } catch { }
     }
     // componi testo
-    const dash = `Ora: ${timeStr}\nBatt/Mem: ${battMem}\nMeteo: ${weatherStr}`;
+    const dash = `Ora: ${timeStr}\n Batt/Mem: ${battMem}\n Meteo: ${weatherStr}`;
     await frame.sendMessage(0x0a, new TxPlainText(dash).pack());
     setStatus("Dashboard inviata");
   };
@@ -438,6 +446,20 @@ const styles: Record<string, React.CSSProperties> = {
     backgroundColor: "#111827",
     color: "#f3f4f6",
     fontFamily: "'Helvetica Neue', Arial, sans-serif",
+  },
+  imageWrapper: {
+    marginTop: 12,
+    textAlign: "center",
+    width: "100%",
+    maxWidth: 300,      // mai più larga di 300px (regola a piacere)
+    maxHeight: 300,     // mai più alta di 300px
+    overflow: "hidden", // taglia l’eccesso
+  },
+  image: {
+    width: "100%",      // scala sempre alla larghezza del wrapper
+    height: "auto",     // conserva le proporzioni
+    maxHeight: "100%",  // non superare l’altezza del wrapper
+    objectFit: "contain", // “contieni” l’immagine dentro il box senza distorsioni
   },
   header: { textAlign: "center", fontSize: 24, marginBottom: 16, color: "#60a5fa" },
   controls: {
