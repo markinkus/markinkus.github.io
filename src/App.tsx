@@ -213,11 +213,14 @@ export default function App() {
             fr.onload = () => res(fr.result as string);
             fr.readAsDataURL(blob);
           });
-          const img = await new Promise<HTMLImageElement>((res) => {
+          const img = await new Promise<HTMLImageElement>((res, rej) => {
             const i = new Image();
+            i.crossOrigin = "anonymous";
             i.onload = () => res(i);
+            i.onerror = () => rej(new Error("load failed"));
             i.src = dataUrl;
           });
+
 
           const canvas = document.createElement("canvas");
           canvas.width = canvas.height = 200;
@@ -242,7 +245,7 @@ export default function App() {
             canvas.toBlob((b) => {
               if (b) resolve(b);
               else reject(new Error("toBlob fallito"));
-            }, "image/jpeg", 0.8);
+            }, "image/png", 0.8);
           });
 
           const sprite = await TxSprite.fromImageBytes(
