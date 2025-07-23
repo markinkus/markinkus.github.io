@@ -87,18 +87,37 @@ export default function App() {
         zoomControl: false,
         attributionControl: false,
       });
+      leafletMap.current.invalidateSize();
       L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
         subdomains: "abcd",
         crossOrigin: true,
+        attribution: "",
       }).addTo(leafletMap.current);
     }
     if (leafletMap.current && pos) {
       leafletMap.current.setView([pos.lat, pos.lng]);
 
+      // rimuove tutti i marker precedenti
+      leafletMap.current.eachLayer((layer) => {
+        if ((layer as any)._icon || (layer as any)._path) {
+          leafletMap.current?.removeLayer(layer);
+        }
+      });
+
+      // aggiungi POI
       poiList.forEach((poi) => {
         L.marker([poi.lat, poi.lng]).addTo(leafletMap.current!).bindPopup(poi.name);
       });
+
+      // aggiungi marker posizione utente
+      L.circleMarker([pos.lat, pos.lng], {
+        radius: 8,
+        color: "#00ffff",
+        fillColor: "#00ffff",
+        fillOpacity: 0.8,
+      }).addTo(leafletMap.current!);
     }
+
   }, [pos]);
   /* ─────────────── Connect & init ─────────────── */
   const handleConnect = async () => {
@@ -229,7 +248,7 @@ export default function App() {
     }
   };
   /* ─────────────── MiniMap ─────────────── */
- const sendMapToFrame = async () => {
+  const sendMapToFrame = async () => {
     if (!frame || !mapRef.current || !leafletMap.current) {
       return setStatus("Errore: mappa o frame non inizializzati");
     }
@@ -248,6 +267,7 @@ export default function App() {
       const canvas = await html2canvas(mapRef.current!, {
         useCORS: true,
         backgroundColor: "#ffffff",
+        scale: 2, // aumenta la risoluzione
       });
 
       const blob: Blob = await new Promise((resolve, reject) => {
