@@ -87,12 +87,17 @@ export default function App() {
         zoomControl: false,
         attributionControl: false,
       });
-      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+        subdomains: "abcd",
         crossOrigin: true,
       }).addTo(leafletMap.current);
     }
     if (leafletMap.current && pos) {
       leafletMap.current.setView([pos.lat, pos.lng]);
+
+      poiList.forEach((poi) => {
+        L.marker([poi.lat, poi.lng]).addTo(leafletMap.current!).bindPopup(poi.name);
+      });
     }
   }, [pos]);
   /* ─────────────── Connect & init ─────────────── */
@@ -164,7 +169,7 @@ export default function App() {
       setPhotoUrl(origUrl);
       setShowMedia(true);
 
-      const sprite = await TxSprite.fromImageBytes(imgBytes, 20_000);
+      const sprite = await TxSprite.fromImageBytes(imgBytes, 35000);
       // toPngBytes non è tipizzato nelle declarations → cast any
       const pngBytes: Uint8Array | undefined = (sprite as any).toPngBytes?.();
       if (pngBytes) setSpriteUrl(blobUrl(pngBytes, "image/png"));
@@ -224,38 +229,34 @@ export default function App() {
     }
   };
   /* ─────────────── MiniMap ─────────────── */
-  const sendMapToFrame = async () => {
-    if (!frame) return setStatus("Connetti prima gli occhiali!");
-    if (!mapRef.current) return setStatus("Mappa non trovata");
+ const sendMapToFrame = async () => {
+    if (!frame || !mapRef.current || !leafletMap.current) {
+      return setStatus("Errore: mappa o frame non inizializzati");
+    }
+
+    setStatus("Attendo rendering mappa…");
+    addLog("▶ wait for leaflet idle");
+
+    await new Promise<void>((resolve) => {
+      leafletMap.current!.once("idle", () => resolve());
+    });
 
     setStatus("Generazione snapshot mappa…");
     addLog("▶ sendMapToFrame");
 
     try {
-      console.log("mapRef current size:", mapRef.current?.offsetWidth, mapRef.current?.offsetHeight);
-      const canvas = await html2canvas(mapRef.current, {
+      const canvas = await html2canvas(mapRef.current!, {
         useCORS: true,
-        allowTaint: false,
         backgroundColor: "#ffffff",
-        logging: true
       });
-
-      // sicurezza: aspetta 100ms per garantire rendering
-      await new Promise((res) => setTimeout(res, 100));
 
       const blob: Blob = await new Promise((resolve, reject) => {
-        canvas.toBlob((b) => {
-          if (b) resolve(b);
-          else reject(new Error("toBlob fallito: canvas è nullo"));
-        }, "image/jpeg", 0.9);
+        canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob fallito"))), "image/jpeg", 0.9);
       });
 
-      const sprite = await TxSprite.fromImageBytes(
-        await blob.arrayBuffer(),
-        25000
-      );
-
+      const sprite = await TxSprite.fromImageBytes(await blob.arrayBuffer(), 25000);
       await frame.sendMessage(0x20, sprite.pack());
+
       addLog("✔ snapshot mappa inviata");
       setStatus("Mappa mostrata sugli occhiali!");
     } catch (e: any) {
