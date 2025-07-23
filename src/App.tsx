@@ -14,7 +14,6 @@ import html2canvas from "html2canvas";
 
 const GEMINI_API_KEY = "AIzaSyCUspjopyRDqf8iR-ftL7UsPyaYfAt1p_M";
 
-/* ─────────────────────────── Helpers ─────────────────────────── */
 const blobUrl = (bytes: ArrayBuffer | Uint8Array, mime = "image/jpeg") =>
   URL.createObjectURL(new Blob([bytes], { type: mime }));
 
@@ -41,17 +40,16 @@ async function fetchGemini(prompt: string, base64Image?: string): Promise<string
 }
 
 export default function App() {
-  /* ─────────────── UI state ─────────────── */
+  // ─────────────── UI state ───────────────
   const [frame, setFrame] = useState<FrameMsg | null>(null);
   const [prompt, setPrompt] = useState("");
   const [response, setResponse] = useState("");
-  const [photoUrl, setPhotoUrl] = useState<string | null>(null); // originale
-  const [spriteUrl, setSpriteUrl] = useState<string | null>(null); // quantizzato PNG
+  const [photoUrl, setPhotoUrl] = useState<string | null>(null);
+  const [spriteUrl, setSpriteUrl] = useState<string | null>(null);
   const [showMedia, setShowMedia] = useState(false);
   const [status, setStatus] = useState("Pronto!");
   const [logs, setLogs] = useState<string[]>([]);
   const [heading, setHeading] = useState(0);
-  const [mapLoading, setMapLoading] = useState(false);
   const [pos, setPos] = useState<{ lat: number; lng: number } | null>(null);
   const mapRef = useRef<HTMLDivElement>(null);
   const leafletMap = useRef<L.Map | null>(null);
@@ -64,7 +62,7 @@ export default function App() {
 
   const addLog = (m: string) => setLogs((l) => [...l.slice(-19), m]);
 
-  /* ─────────────── Compass listener ─────────────── */
+  // ─────────────── Compass listener ───────────────
   useEffect(() => {
     const onOrient = (e: DeviceOrientationEvent) => {
       if (e.absolute && e.alpha != null) setHeading(e.alpha);
@@ -73,12 +71,15 @@ export default function App() {
     return () => window.removeEventListener("deviceorientation", onOrient);
   }, []);
 
+  // ─────────────── Geolocate listener ───────────────
   useEffect(() => {
     const geoId = navigator.geolocation.watchPosition((p) => {
       setPos({ lat: p.coords.latitude, lng: p.coords.longitude });
     });
     return () => navigator.geolocation.clearWatch(geoId);
   }, []);
+
+  // ─────────────── Leaflet init & updates ───────────────
   useEffect(() => {
     if (mapRef.current && !leafletMap.current) {
       leafletMap.current = L.map(mapRef.current, {
@@ -88,16 +89,20 @@ export default function App() {
         attributionControl: false,
       });
       leafletMap.current.invalidateSize();
-      L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-        subdomains: "abcd",
-        crossOrigin: true,
-        attribution: "",
-      }).addTo(leafletMap.current);
+      L.tileLayer(
+        "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
+        {
+          subdomains: "abcd",
+          crossOrigin: true,
+          attribution: "",
+        }
+      ).addTo(leafletMap.current);
     }
     if (leafletMap.current && pos) {
+      // aggiorna vista
       leafletMap.current.setView([pos.lat, pos.lng]);
 
-      // rimuove tutti i marker precedenti
+      // rimuove marker precedenti
       leafletMap.current.eachLayer((layer) => {
         if ((layer as any)._icon || (layer as any)._path) {
           leafletMap.current?.removeLayer(layer);
@@ -105,11 +110,13 @@ export default function App() {
       });
 
       // aggiungi POI
-      poiList.forEach((poi) => {
-        L.marker([poi.lat, poi.lng]).addTo(leafletMap.current!).bindPopup(poi.name);
-      });
+      poiList.forEach((poi) =>
+        L.marker([poi.lat, poi.lng])
+          .addTo(leafletMap.current!)
+          .bindPopup(poi.name)
+      );
 
-      // aggiungi marker posizione utente
+      // aggiungi marker utente
       L.circleMarker([pos.lat, pos.lng], {
         radius: 8,
         color: "#00ffff",
@@ -117,9 +124,9 @@ export default function App() {
         fillOpacity: 0.8,
       }).addTo(leafletMap.current!);
     }
-
   }, [pos]);
-  /* ─────────────── Connect & init ─────────────── */
+
+  // ─────────────── Connect & init Frame ───────────────
   const handleConnect = async () => {
     setStatus("Connessione in corso…");
     addLog("▶ handleConnect");
@@ -127,9 +134,7 @@ export default function App() {
       const f = new FrameMsg();
       await f.connect();
       addLog("✔ connected");
-
       f.attachPrintResponseHandler((m) => addLog("[Frame] " + m));
-
       await f.uploadStdLuaLibs([
         StdLua.DataMin,
         StdLua.PlainTextMin,
@@ -137,16 +142,61 @@ export default function App() {
         StdLua.SpriteMin,
       ]);
       addLog("✔ libs loaded");
-
       await f.uploadFrameApp(markinoFrameApp);
       addLog("✔ Lua script uploaded");
       await f.startFrameApp();
-
       setFrame(f);
       setStatus("Occhiali pronti!");
     } catch (e: any) {
       addLog("✖ connect: " + e.message);
       setStatus("Errore connect: " + e.message);
+    }
+  };
+
+  // ─────────────── sendMapToFrame con whenReady ───────────────
+  const sendMapToFrame = async () => {
+    if (!frame || !mapRef.current || !leafletMap.current) {
+      return setStatus("Errore: mappa o frame non inizializzati");
+    }
+
+    setStatus("Attendo rendering mappa…");
+    addLog("▶ wait for leaflet ready");
+
+    // quando la mappa è pronta e dimensioni corrette
+    await leafletMap.current.whenReady();
+    leafletMap.current.invalidateSize();
+    // forza redraw dei tile
+    leafletMap.current.eachLayer((layer: any) => {
+      if (typeof layer.redraw === "function") layer.redraw();
+    });
+
+    setStatus("Generazione snapshot mappa…");
+    addLog("▶ sendMapToFrame");
+
+    try {
+      const canvas = await html2canvas(mapRef.current!, {
+        useCORS: true,
+        backgroundColor: "#ffffff",
+        scale: 2,
+      });
+      const blob: Blob = await new Promise((resolve, reject) => {
+        canvas.toBlob(
+          (b) => (b ? resolve(b) : reject(new Error("toBlob fallito"))),
+          "image/jpeg",
+          0.9
+        );
+      });
+      const sprite = await TxSprite.fromImageBytes(
+        await blob.arrayBuffer(),
+        25000,
+        true
+      );
+      await frame.sendMessage(0x20, sprite.pack());
+      addLog("✔ snapshot mappa inviata");
+      setStatus("Mappa mostrata sugli occhiali!");
+    } catch (e: any) {
+      addLog("✖ map error: " + e.message);
+      setStatus("Errore mappa: " + e.message);
     }
   };
 
@@ -247,43 +297,7 @@ export default function App() {
       setStatus("Errore disconnect: " + e.message);
     }
   };
-  /* ─────────────── MiniMap ─────────────── */
-  const sendMapToFrame = async () => {
-    if (!frame || !mapRef.current || !leafletMap.current) {
-      return setStatus("Errore: mappa o frame non inizializzati");
-    }
 
-    setStatus("Attendo rendering mappa…");
-    addLog("▶ wait for leaflet idle");
-
-    await new Promise<void>((resolve) => {
-      leafletMap.current!.once("idle", () => resolve());
-    });
-
-    setStatus("Generazione snapshot mappa…");
-    addLog("▶ sendMapToFrame");
-
-    try {
-      const canvas = await html2canvas(mapRef.current!, {
-        useCORS: true,
-        backgroundColor: "#ffffff",
-        scale: 2, // aumenta la risoluzione
-      });
-
-      const blob: Blob = await new Promise((resolve, reject) => {
-        canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob fallito"))), "image/jpeg", 0.9);
-      });
-
-      const sprite = await TxSprite.fromImageBytes(await blob.arrayBuffer(), 25000);
-      await frame.sendMessage(0x20, sprite.pack());
-
-      addLog("✔ snapshot mappa inviata");
-      setStatus("Mappa mostrata sugli occhiali!");
-    } catch (e: any) {
-      addLog("✖ map error: " + e.message);
-      setStatus("Errore mappa: " + e.message);
-    }
-  };
 
 
   const startAutoUpdate = () => {
@@ -305,7 +319,7 @@ export default function App() {
 
   return (
     <div style={styles.container}>
-      <h1 style={styles.header}>Gemini • Pollinations → Frame</h1>
+      <h1 style={styles.header}>Markino Solutions → Frame</h1>
 
       <div style={styles.controls}>
         <button onClick={handleConnect} style={btn(styles.btnSecondary, !!frame)}>Connetti & Carica</button>
@@ -366,19 +380,88 @@ export default function App() {
 }
 
 /* ─────────────── Styles ─────────────── */
-const styles: Record<string, React.CSSProperties> = {
-  container: { maxWidth: 650, margin: "0 auto", padding: 16, fontFamily: "'Helvetica Neue', Arial", color: "#1f2937" },
-  header: { textAlign: "center", fontSize: 24, marginBottom: 16, color: "#4f46e5" },
-  controls: { display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center", marginBottom: 16 },
-  btnPrimary: { flex: 1, minWidth: 120, padding: "12px 16px", backgroundColor: "#4f46e5", color: "#fff", border: "none", borderRadius: 8, fontSize: 16, cursor: "pointer", boxShadow: "0 2px 6px rgba(0,0,0,.1)" },
-  btnSecondary: { flex: 1, minWidth: 120, padding: "12px 16px", backgroundColor: "#10b981", color: "#fff", border: "none", borderRadius: 8, fontSize: 16, cursor: "pointer", boxShadow: "0 2px 6px rgba(0,0,0,.1)" },
-  btnDisabled: { opacity: 0.6, cursor: "not-allowed" },
-  imageWrapper: { marginTop: 12, textAlign: "center" },
-  image: { width: "100%", borderRadius: 8, boxShadow: "0 2px 6px rgba(0,0,0,.1)" },
-  textarea: { width: "100%", padding: 12, fontSize: 16, borderRadius: 8, border: "1px solid #d1d5db", resize: "vertical", fontFamily: "inherit", marginBottom: 12 },
-  sendButton: { width: "100%", padding: "12px 0", backgroundColor: "#4f46e5", color: "#fff", border: "none", borderRadius: 8, fontSize: 18, cursor: "pointer", boxShadow: "0 2px 6px rgba(0,0,0,.1)", marginBottom: 16 },
-  status: { textAlign: "center", color: "#6b7280", minHeight: 24, marginBottom: 8 },
-  logs: { backgroundColor: "#f3f4f6", padding: 12, borderRadius: 8, fontSize: 14, color: "#374151", maxHeight: 120, overflowY: "auto", marginBottom: 16 },
-  response: { fontSize: 16, color: "#1f2937" },
-  responsePre: { backgroundColor: "#f3f4f6", padding: 12, borderRadius: 8, border: "1px solid #d1d5db", whiteSpace: "pre-wrap", marginTop: 4 },
-};
+ const styles: Record<string, React.CSSProperties> = {
+    container: {
+      maxWidth: 650,
+      margin: "0 auto",
+      padding: 16,
+      fontFamily: "'Helvetica Neue', Arial",
+      backgroundColor: "#1f1f1f",
+      color: "#f5f5f5",
+      minHeight: "100vh",
+    },
+    header: { textAlign: "center", fontSize: 24, marginBottom: 16, color: "#4f46e5" },
+    controls: { display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center", marginBottom: 16 },
+    btnPrimary: {
+      flex: 1,
+      minWidth: 120,
+      padding: "12px 16px",
+      backgroundColor: "#4f46e5",
+      color: "#fff",
+      border: "none",
+      borderRadius: 8,
+      fontSize: 16,
+      cursor: "pointer",
+      boxShadow: "0 2px 6px rgba(0,0,0,.5)",
+    },
+    btnSecondary: {
+      flex: 1,
+      minWidth: 120,
+      padding: "12px 16px",
+      backgroundColor: "#10b981",
+      color: "#fff",
+      border: "none",
+      borderRadius: 8,
+      fontSize: 16,
+      cursor: "pointer",
+      boxShadow: "0 2px 6px rgba(0,0,0,.5)",
+    },
+    btnDisabled: { opacity: 0.6, cursor: "not-allowed" },
+    imageWrapper: { marginTop: 12, textAlign: "center" },
+    image: { width: "100%", borderRadius: 8, boxShadow: "0 2px 6px rgba(0,0,0,.5)" },
+    textarea: {
+      width: "100%",
+      padding: 12,
+      fontSize: 16,
+      borderRadius: 8,
+      border: "1px solid #333",
+      backgroundColor: "#333",
+      color: "#f5f5f5",
+      resize: "vertical",
+      fontFamily: "inherit",
+      marginBottom: 12,
+    },
+    sendButton: {
+      width: "100%",
+      padding: "12px 0",
+      backgroundColor: "#4f46e5",
+      color: "#fff",
+      border: "none",
+      borderRadius: 8,
+      fontSize: 18,
+      cursor: "pointer",
+      boxShadow: "0 2px 6px rgba(0,0,0,.5)",
+      marginBottom: 16,
+    },
+    status: { textAlign: "center", color: "#aaa", minHeight: 24, marginBottom: 8 },
+    logs: {
+      backgroundColor: "#2a2a2a",
+      padding: 12,
+      borderRadius: 8,
+      fontSize: 14,
+      color: "#ccc",
+      maxHeight: 120,
+      overflowY: "auto",
+      marginBottom: 16,
+    },
+    response: { fontSize: 16, color: "#f5f5f5" },
+    responsePre: {
+      backgroundColor: "#2a2a2a",
+      padding: 12,
+      borderRadius: 8,
+      border: "1px solid #333",
+      whiteSpace: "pre-wrap",
+      marginTop: 4,
+      color: "#f5f5f5",
+    },
+  };
