@@ -38,16 +38,18 @@ async function fetchGemini(prompt: string, base64Image?: string): Promise<string
 }
 
 export default function App() {
+  /* ─────────────── UI state ─────────────── */
   const [frame, setFrame] = useState<FrameMsg | null>(null);
   const [prompt, setPrompt] = useState("");
   const [response, setResponse] = useState("");
-  const [photoUrl, setPhotoUrl] = useState<string | null>(null);
-  const [spriteUrl, setSpriteUrl] = useState<string | null>(null);
+  const [photoUrl, setPhotoUrl] = useState<string | null>(null); // originale
+  const [spriteUrl, setSpriteUrl] = useState<string | null>(null); // quantizzato PNG
   const [showMedia, setShowMedia] = useState(false);
   const [status, setStatus] = useState("Pronto!");
   const [logs, setLogs] = useState<string[]>([]);
-  const [mapLoading, setMapLoading] = useState(false);
   const [heading, setHeading] = useState(0);
+  const [mapLoading, setMapLoading] = useState(false);
+  const [battMem, setBattMem] = useState<string | null>(null);
 
   const addLog = (m: string) => setLogs((l) => [...l.slice(-19), m]);
 
@@ -62,25 +64,32 @@ export default function App() {
 
   /* ─────────────── Connect & init ─────────────── */
   const handleConnect = async () => {
-    setStatus("Connessione…");
+    setStatus("Connessione in corso…");
+    addLog("▶ handleConnect");
     try {
       const f = new FrameMsg();
       await f.connect();
+      addLog("✔ connected");
+
       f.attachPrintResponseHandler((m) => addLog("[Frame] " + m));
+
       await f.uploadStdLuaLibs([
         StdLua.DataMin,
         StdLua.PlainTextMin,
         StdLua.CameraMin,
         StdLua.SpriteMin,
       ]);
+      addLog("✔ libs loaded");
+
       await f.uploadFrameApp(markinoFrameApp);
+      addLog("✔ Lua script uploaded");
       await f.startFrameApp();
 
       setFrame(f);
       setStatus("Occhiali pronti!");
     } catch (e: any) {
-      setStatus("Errore connect: " + e.message);
       addLog("✖ connect: " + e.message);
+      setStatus("Errore connect: " + e.message);
     }
   };
 
@@ -110,24 +119,29 @@ export default function App() {
   const handleGenerateImage = async () => {
     if (!frame) return setStatus("Connetti prima gli occhiali!");
     setStatus("Generazione immagine…");
+    addLog("▶ handleGenerateImage");
     try {
-      const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt || "abstract art")}`;
-      const bytes = await (await fetch(url)).arrayBuffer();
-      const imgUrl = blobUrl(bytes);
-      setPhotoUrl(imgUrl);
+      const pollUrl =
+        `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt || "abstract art")}`;
+      const resp = await fetch(pollUrl);
+      const imgBytes = await resp.arrayBuffer();
+
+      // preview originale
+      const origUrl = blobUrl(imgBytes);
+      setPhotoUrl(origUrl);
       setShowMedia(true);
 
-      const sprite = await TxSprite.fromImageBytes(bytes);
+      const sprite = await TxSprite.fromImageBytes(imgBytes, 50000);
       // toPngBytes non è tipizzato nelle declarations → cast any
       const pngBytes: Uint8Array | undefined = (sprite as any).toPngBytes?.();
       if (pngBytes) setSpriteUrl(blobUrl(pngBytes, "image/png"));
 
       await frame.sendMessage(0x20, sprite.pack());
-      setStatus("Sprite mostrato!");
-      addLog("✔ sprite inviato");
+      addLog("✔ sprite inviato agli occhiali");
+      setStatus("Immagine Pollinations mostrata!");
     } catch (e: any) {
-      setStatus("Errore generazione: " + e.message);
       addLog("✖ generateImage: " + e.message);
+      setStatus("Errore generazione immagine: " + e.message);
     }
   };
 
@@ -171,6 +185,7 @@ export default function App() {
       await frame.stopFrameApp();
       await frame.disconnect();
       setFrame(null);
+      setBattMem(null);
       setStatus("Disconnesso");
     } catch (e: any) {
       setStatus("Errore disconnect: " + e.message);
@@ -211,7 +226,7 @@ export default function App() {
       <textarea rows={3} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Prompt…" style={styles.textarea} />
       <button onClick={handleSend} disabled={!frame && !prompt} style={btn(styles.sendButton, !frame && !prompt)}>Invia a Gemini & Frame</button>
 
-      <div style={styles.status}>{status}</div>
+      <div style={styles.status}><b>Stato:</b> {status} {battMem && `| 🔋 ${battMem}`}</div>
       <pre style={styles.logs}>{logs.join("\n")}</pre>
       <div style={styles.response}>
         <b>Risposta Gemini:</b>
