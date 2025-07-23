@@ -40,7 +40,7 @@ async function fetchGemini(prompt: string, base64Image?: string): Promise<string
 }
 
 export default function App() {
-  // ─────────────── UI state ───────────────
+  // ───────── UI state ─────────
   const [frame, setFrame] = useState<FrameMsg | null>(null);
   const [prompt, setPrompt] = useState("");
   const [response, setResponse] = useState("");
@@ -60,9 +60,10 @@ export default function App() {
     { name: "Casa", lat: 40.8362, lng: 16.5925 },
   ];
 
-  const addLog = (m: string) => setLogs((l) => [...l.slice(-19), m]);
+  const addLog = (m: string) =>
+    setLogs((l) => [...l.slice(-19), `${new Date().toLocaleTimeString()}: ${m}`]);
 
-  // ─────────────── Compass listener ───────────────
+  // ───────── Compass listener ─────────
   useEffect(() => {
     const onOrient = (e: DeviceOrientationEvent) => {
       if (e.absolute && e.alpha != null) setHeading(e.alpha);
@@ -71,15 +72,17 @@ export default function App() {
     return () => window.removeEventListener("deviceorientation", onOrient);
   }, []);
 
-  // ─────────────── Geolocate listener ───────────────
+  // ─────── Geolocation listener ───────
   useEffect(() => {
-    const geoId = navigator.geolocation.watchPosition((p) => {
-      setPos({ lat: p.coords.latitude, lng: p.coords.longitude });
-    });
+    const geoId = navigator.geolocation.watchPosition(
+      (p) => setPos({ lat: p.coords.latitude, lng: p.coords.longitude }),
+      () => {},
+      { enableHighAccuracy: true }
+    );
     return () => navigator.geolocation.clearWatch(geoId);
   }, []);
 
-  // ─────────────── Leaflet init & updates ───────────────
+  // ───── Leaflet init & updates ─────
   useEffect(() => {
     if (mapRef.current && !leafletMap.current) {
       leafletMap.current = L.map(mapRef.current, {
@@ -99,10 +102,9 @@ export default function App() {
       ).addTo(leafletMap.current);
     }
     if (leafletMap.current && pos) {
-      // aggiorna vista
       leafletMap.current.setView([pos.lat, pos.lng]);
 
-      // rimuove marker precedenti
+      // rimuovi vecchi marker / path
       leafletMap.current.eachLayer((layer) => {
         if ((layer as any)._icon || (layer as any)._path) {
           leafletMap.current?.removeLayer(layer);
@@ -126,7 +128,7 @@ export default function App() {
     }
   }, [pos]);
 
-  // ─────────────── Connect & init Frame ───────────────
+  // ───────── Connect & start Frame ─────────
   const handleConnect = async () => {
     setStatus("Connessione in corso…");
     addLog("▶ handleConnect");
@@ -153,50 +155,30 @@ export default function App() {
     }
   };
 
-  // ─────────────── sendMapToFrame con whenReady ───────────────
+  // ───────── snapshot mappa ─────────
   const sendMapToFrame = async () => {
-    if (!frame || !mapRef.current || !leafletMap.current) {
-      return setStatus("Errore: mappa o frame non inizializzati");
+    if (!frame || !mapRef.current) {
+      setStatus("Errore: init mappa o frame");
+      return;
     }
-
-    setStatus("Attendo rendering mappa…");
-    addLog("▶ wait for leaflet ready");
-
-    // quando la mappa è pronta e dimensioni corrette
-    await leafletMap.current.whenReady();
-    leafletMap.current.invalidateSize();
-    // forza redraw dei tile
-    leafletMap.current.eachLayer((layer: any) => {
-      if (typeof layer.redraw === "function") layer.redraw();
-    });
-
     setStatus("Generazione snapshot mappa…");
     addLog("▶ sendMapToFrame");
-
     try {
-      const canvas = await html2canvas(mapRef.current!, {
+      const canvas = await html2canvas(mapRef.current, {
         useCORS: true,
-        backgroundColor: "#ffffff",
+        backgroundColor: "#1f1f1f",
         scale: 2,
       });
-      const blob: Blob = await new Promise((resolve, reject) => {
-        canvas.toBlob(
-          (b) => (b ? resolve(b) : reject(new Error("toBlob fallito"))),
-          "image/jpeg",
-          0.9
-        );
-      });
-      const sprite = await TxSprite.fromImageBytes(
-        await blob.arrayBuffer(),
-        25000,
-        true
+      const blob: Blob = await new Promise((res, rej) =>
+        canvas.toBlob((b) => (b ? res(b) : rej("toBlob fallito")), "image/jpeg", 0.9)
       );
+      const sprite = await TxSprite.fromImageBytes(await blob.arrayBuffer(), 25000);
       await frame.sendMessage(0x20, sprite.pack());
-      addLog("✔ snapshot mappa inviata");
-      setStatus("Mappa mostrata sugli occhiali!");
+      addLog("✔ mappa inviata");
+      setStatus("Mappa mostrata!");
     } catch (e: any) {
-      addLog("✖ map error: " + e.message);
-      setStatus("Errore mappa: " + e.message);
+      addLog("✖ map error: " + e);
+      setStatus("Errore mappa");
     }
   };
 
@@ -334,20 +316,7 @@ export default function App() {
           <button onClick={startAutoUpdate}>▶ Auto</button>
           <button onClick={stopAutoUpdate}>■ Stop</button>
         </div>
-        <div
-          id="map"
-          ref={mapRef}
-          style={{
-            width: 240,
-            height: 240,
-            position: "absolute",
-            top: "-10000px",
-            left: "-10000px",
-            opacity: 0,
-            pointerEvents: "none",
-            zIndex: -999,
-          }}
-        ></div>
+
 
         <button onClick={handleDisconnect} disabled={!frame} style={btn(styles.btnSecondary, !frame)}>Disconnetti</button>
         <button onClick={handleGenerateImage} disabled={!frame || !prompt} style={btn(styles.btnPrimary, !frame || !prompt)}>🎨 Genera Immagine</button>
@@ -375,93 +344,99 @@ export default function App() {
         <b>Risposta Gemini:</b>
         <pre style={styles.responsePre}>{response}</pre>
       </div>
+        <div
+        ref={mapRef}
+        style={{
+          width: "100%",
+          height: 300,
+          borderRadius: 8,
+          overflow: "hidden",
+          marginBottom: 16,
+          boxShadow: "0 2px 6px rgba(0,0,0,.5)",
+        }}
+      />
     </div>
   );
 }
 
 /* ─────────────── Styles ─────────────── */
- const styles: Record<string, React.CSSProperties> = {
+  const styles: Record<string, React.CSSProperties> = {
     container: {
       maxWidth: 650,
       margin: "0 auto",
       padding: 16,
-      fontFamily: "'Helvetica Neue', Arial",
-      backgroundColor: "#1f1f1f",
-      color: "#f5f5f5",
-      minHeight: "100vh",
+      backgroundColor: "#111827",
+      color: "#f3f4f6",
+      fontFamily: "'Helvetica Neue', Arial, sans-serif",
     },
-    header: { textAlign: "center", fontSize: 24, marginBottom: 16, color: "#4f46e5" },
+    header: { textAlign: "center", fontSize: 24, marginBottom: 16, color: "#60a5fa" },
     controls: { display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center", marginBottom: 16 },
     btnPrimary: {
-      flex: 1,
-      minWidth: 120,
-      padding: "12px 16px",
-      backgroundColor: "#4f46e5",
+      padding: "10px 14px",
+      backgroundColor: "#2563eb",
       color: "#fff",
       border: "none",
-      borderRadius: 8,
-      fontSize: 16,
+      borderRadius: 6,
       cursor: "pointer",
-      boxShadow: "0 2px 6px rgba(0,0,0,.5)",
+      flex: 1,
+      minWidth: 120,
     },
     btnSecondary: {
-      flex: 1,
-      minWidth: 120,
-      padding: "12px 16px",
-      backgroundColor: "#10b981",
+      padding: "10px 14px",
+      backgroundColor: "#059669",
       color: "#fff",
       border: "none",
-      borderRadius: 8,
-      fontSize: 16,
+      borderRadius: 6,
       cursor: "pointer",
-      boxShadow: "0 2px 6px rgba(0,0,0,.5)",
+      flex: 1,
+      minWidth: 120,
     },
-    btnDisabled: { opacity: 0.6, cursor: "not-allowed" },
+    btnDisabled: { opacity: 0.5, cursor: "not-allowed" },
     imageWrapper: { marginTop: 12, textAlign: "center" },
-    image: { width: "100%", borderRadius: 8, boxShadow: "0 2px 6px rgba(0,0,0,.5)" },
+    image: { maxWidth: "100%", borderRadius: 6, boxShadow: "0 2px 6px rgba(0,0,0,.5)" },
     textarea: {
       width: "100%",
-      padding: 12,
-      fontSize: 16,
-      borderRadius: 8,
-      border: "1px solid #333",
-      backgroundColor: "#333",
-      color: "#f5f5f5",
-      resize: "vertical",
-      fontFamily: "inherit",
+      backgroundColor: "#1f2937",
+      color: "#f3f4f6",
+      border: "1px solid #374151",
+      borderRadius: 6,
+      padding: 10,
       marginBottom: 12,
+      fontSize: 16,
     },
     sendButton: {
       width: "100%",
       padding: "12px 0",
-      backgroundColor: "#4f46e5",
+      backgroundColor: "#3b82f6",
       color: "#fff",
       border: "none",
-      borderRadius: 8,
-      fontSize: 18,
+      borderRadius: 6,
       cursor: "pointer",
-      boxShadow: "0 2px 6px rgba(0,0,0,.5)",
       marginBottom: 16,
     },
-    status: { textAlign: "center", color: "#aaa", minHeight: 24, marginBottom: 8 },
+    status: { textAlign: "center", marginBottom: 8, color: "#9ca3af" },
     logs: {
-      backgroundColor: "#2a2a2a",
+      backgroundColor: "#1f2937",
       padding: 12,
-      borderRadius: 8,
+      borderRadius: 6,
       fontSize: 14,
-      color: "#ccc",
+      color: "#d1d5db",
       maxHeight: 120,
       overflowY: "auto",
       marginBottom: 16,
     },
-    response: { fontSize: 16, color: "#f5f5f5" },
     responsePre: {
-      backgroundColor: "#2a2a2a",
+      backgroundColor: "#1f2937",
       padding: 12,
-      borderRadius: 8,
-      border: "1px solid #333",
+      borderRadius: 6,
+      color: "#e5e7eb",
       whiteSpace: "pre-wrap",
-      marginTop: 4,
-      color: "#f5f5f5",
+    },
+    map: {
+      width: "100%",
+      height: 300,
+      borderRadius: 6,
+      boxShadow: "0 2px 6px rgba(0,0,0,.5)",
+      marginBottom: 16,
     },
   };
