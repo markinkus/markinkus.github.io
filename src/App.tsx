@@ -131,7 +131,7 @@ export default function App() {
       setPhotoUrl(origUrl);
       setShowMedia(true);
 
-      const sprite = await TxSprite.fromImageBytes(imgBytes, 50000);
+      const sprite = await TxSprite.fromImageBytes(imgBytes, 20_000, true);
       // toPngBytes non è tipizzato nelle declarations → cast any
       const pngBytes: Uint8Array | undefined = (sprite as any).toPngBytes?.();
       if (pngBytes) setSpriteUrl(blobUrl(pngBytes, "image/png"));
