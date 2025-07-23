@@ -13,6 +13,7 @@ import "leaflet/dist/leaflet.css";
 import html2canvas from "html2canvas";
 
 const GEMINI_API_KEY = "AIzaSyCUspjopyRDqf8iR-ftL7UsPyaYfAt1p_M";
+const OSRM_URL = "https://router.project-osrm.org";
 
 const blobUrl = (bytes: ArrayBuffer | Uint8Array, mime = "image/jpeg") =>
   URL.createObjectURL(new Blob([bytes], { type: mime }));
@@ -51,6 +52,12 @@ export default function App() {
   const [logs, setLogs] = useState<string[]>([]);
   const [heading, setHeading] = useState(0);
   const [pos, setPos] = useState<{ lat: number; lng: number } | null>(null);
+  // per navigazione
+  const [destInput, setDestInput] = useState({ lat: "", lng: "" });
+  const [dest, setDest] = useState<{ lat: number; lng: number } | null>(null);
+  const routeLayer = useRef<L.Polyline | null>(null);
+
+  // mappa Leaflet
   const mapRef = useRef<HTMLDivElement>(null);
   const leafletMap = useRef<L.Map | null>(null);
   const autoUpdateRef = useRef<NodeJS.Timeout | null>(null);
@@ -72,61 +79,66 @@ export default function App() {
     return () => window.removeEventListener("deviceorientation", onOrient);
   }, []);
 
-  // ─────── Geolocation listener ───────
+  // ───────── Geolocation ─────────
   useEffect(() => {
-    const geoId = navigator.geolocation.watchPosition(
+    const id = navigator.geolocation.watchPosition(
       (p) => setPos({ lat: p.coords.latitude, lng: p.coords.longitude }),
-      () => {},
+      () => { },
       { enableHighAccuracy: true }
     );
-    return () => navigator.geolocation.clearWatch(geoId);
+    return () => navigator.geolocation.clearWatch(id);
   }, []);
 
-  // ───── Leaflet init & updates ─────
+  // ───── Leaflet init & update ─────
   useEffect(() => {
     if (mapRef.current && !leafletMap.current) {
       leafletMap.current = L.map(mapRef.current, {
         center: [40.8362, 16.5936],
-        zoom: 16,
+        zoom: 15,
         zoomControl: false,
         attributionControl: false,
       });
-      leafletMap.current.invalidateSize();
       L.tileLayer(
         "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
-        {
-          subdomains: "abcd",
-          crossOrigin: true,
-          attribution: "",
-        }
+        { subdomains: "abcd", crossOrigin: true, attribution: "" }
       ).addTo(leafletMap.current);
     }
     if (leafletMap.current && pos) {
       leafletMap.current.setView([pos.lat, pos.lng]);
-
-      // rimuovi vecchi marker / path
-      leafletMap.current.eachLayer((layer) => {
-        if ((layer as any)._icon || (layer as any)._path) {
-          leafletMap.current?.removeLayer(layer);
+      // rimuovi vecchi marker e rotta
+      leafletMap.current.eachLayer((l) => {
+        if ((l as any)._icon || (l as any)._path) {
+          leafletMap.current!.removeLayer(l);
         }
       });
-
-      // aggiungi POI
-      poiList.forEach((poi) =>
-        L.marker([poi.lat, poi.lng])
-          .addTo(leafletMap.current!)
-          .bindPopup(poi.name)
-      );
-
-      // aggiungi marker utente
+      // marker utente
       L.circleMarker([pos.lat, pos.lng], {
-        radius: 8,
+        radius: 6,
         color: "#00ffff",
         fillColor: "#00ffff",
         fillOpacity: 0.8,
-      }).addTo(leafletMap.current!);
+      }).addTo(leafletMap.current);
+      // se c’è destinazione, traccia rotta
+      if (dest) {
+        fetch(
+          `${OSRM_URL}/route/v1/driving/${pos.lng},${pos.lat};${dest.lng},${dest.lat}` +
+          `?overview=full&geometries=geojson`
+        )
+          .then((r) => r.json())
+          .then((js) => {
+            const coords = js.routes[0].geometry.coordinates.map(
+              ([lng, lat]: [number, number]) => [lat, lng] as [number, number]
+            );
+            routeLayer.current?.remove();
+            routeLayer.current = L.polyline(coords, {
+              color: "red",
+              weight: 4,
+            }).addTo(leafletMap.current!);
+          })
+          .catch((e) => console.warn("OSRM error", e));
+      }
     }
-  }, [pos]);
+  }, [pos, dest]);
 
   // ───────── Connect & start Frame ─────────
   const handleConnect = async () => {
@@ -155,31 +167,56 @@ export default function App() {
     }
   };
 
-  // ───────── snapshot mappa ─────────
+  // ───────── Snapshot Mappa ─────────
   const sendMapToFrame = async () => {
-    if (!frame || !mapRef.current) {
-      setStatus("Errore: init mappa o frame");
-      return;
-    }
-    setStatus("Generazione snapshot mappa…");
+    if (!frame || !mapRef.current) return setStatus("Init mappa o frame");
+    setStatus("Snap mappa…");
     addLog("▶ sendMapToFrame");
     try {
       const canvas = await html2canvas(mapRef.current, {
         useCORS: true,
-        backgroundColor: "#1f1f1f",
+        backgroundColor: "#111827",
         scale: 2,
       });
       const blob: Blob = await new Promise((res, rej) =>
         canvas.toBlob((b) => (b ? res(b) : rej("toBlob fallito")), "image/jpeg", 0.9)
       );
-      const sprite = await TxSprite.fromImageBytes(await blob.arrayBuffer(), 25000);
+      const sprite = await TxSprite.fromImageBytes(
+        await blob.arrayBuffer(),
+        30000
+      );
       await frame.sendMessage(0x20, sprite.pack());
       addLog("✔ mappa inviata");
       setStatus("Mappa mostrata!");
     } catch (e: any) {
-      addLog("✖ map error: " + e);
+      addLog("✖ mappa error: " + e);
       setStatus("Errore mappa");
     }
+  };
+
+  // ───────── Auto‐update ogni 5s ─────────
+  const startAutoUpdate = () => {
+    if (autoUpdateRef.current) return;
+    autoUpdateRef.current = setInterval(sendMapToFrame, 5000);
+    addLog("▶ Auto‐update ON");
+  };
+  const stopAutoUpdate = () => {
+    if (autoUpdateRef.current) {
+      clearInterval(autoUpdateRef.current);
+      autoUpdateRef.current = null;
+      addLog("■ Auto‐update OFF");
+    }
+  };
+
+  // ───────── Setta destinazione ─────────
+  const handleSetDest = () => {
+    const lat = parseFloat(destInput.lat);
+    const lng = parseFloat(destInput.lng);
+    if (!isNaN(lat) && !isNaN(lng)) {
+      setDest({ lat, lng });
+      addLog(`▶ destinazione settata: ${lat.toFixed(5)},${lng.toFixed(5)}`);
+    }
+    setDestInput({ lat: "", lng: "" });
   };
 
   /* ─────────────── Capture photo (unchanged) ─────────────── */
@@ -220,7 +257,7 @@ export default function App() {
       setPhotoUrl(origUrl);
       setShowMedia(true);
 
-      const sprite = await TxSprite.fromImageBytes(imgBytes, 35000);
+      const sprite = await TxSprite.fromImageBytes(imgBytes, 45000);
       // toPngBytes non è tipizzato nelle declarations → cast any
       const pngBytes: Uint8Array | undefined = (sprite as any).toPngBytes?.();
       if (pngBytes) setSpriteUrl(blobUrl(pngBytes, "image/png"));
@@ -279,23 +316,37 @@ export default function App() {
       setStatus("Errore disconnect: " + e.message);
     }
   };
-
-
-
-  const startAutoUpdate = () => {
-    if (autoUpdateRef.current) return;
-    autoUpdateRef.current = setInterval(sendMapToFrame, 5000);
-    addLog("▶ Auto-update ON");
-  };
-
-  const stopAutoUpdate = () => {
-    if (autoUpdateRef.current) {
-      clearInterval(autoUpdateRef.current);
-      autoUpdateRef.current = null;
-      addLog("■ Auto-update OFF");
+  // pulsante Dashboard: clear + ora, batt/mem + meteo
+  const handleDashboard = async () => {
+    if (!frame) return setStatus("Connetti prima");
+    addLog("▶ showDashboard");
+    // pulisci schermo
+    await frame.sendMessage(0x0a, new TxPlainText("").pack());
+    // ora
+    const now = new Date();
+    const timeStr = now.toLocaleTimeString();
+    // batteria/memoria
+    const battMem = await frame.sendLua(
+      'print(frame.battery_level() .. " / " .. collectgarbage("count"))',
+      true
+    );
+    // meteo
+    let weatherStr = "meteo sconosciuto";
+    if (pos) {
+      try {
+        const wres = await fetch(
+          `https://api.open-meteo.com/v1/forecast?latitude=${pos.lat}&longitude=${pos.lng}&current_weather=true`
+        );
+        const wj = await wres.json();
+        const cw = wj.current_weather;
+        weatherStr = `${cw.temperature}°C, vento ${cw.windspeed} km/h`;
+      } catch {}
     }
+    // componi testo
+    const dash = `Ora: ${timeStr}\nBatt/Mem: ${battMem}\nMeteo: ${weatherStr}`;
+    await frame.sendMessage(0x0a, new TxPlainText(dash).pack());
+    setStatus("Dashboard inviata");
   };
-
 
   const btn = (st: any, dis = false) => ({ ...st, ...(dis ? styles.btnDisabled : {}) });
 
@@ -304,21 +355,40 @@ export default function App() {
       <h1 style={styles.header}>Markino Solutions → Frame</h1>
 
       <div style={styles.controls}>
-        <button onClick={handleConnect} style={btn(styles.btnSecondary, !!frame)}>Connetti & Carica</button>
+        <button onClick={handleConnect} style={btn(styles.btnSecondary, !!frame)}>🔌Connetti & Carica</button>
+        <button onClick={handleDashboard} disabled={!frame} style={btn(styles.btnSecondary, !frame)}>📊 Dashboard</button>
         <button onClick={handleCapture} disabled={!frame} style={btn(styles.btnPrimary, !frame)}>📸 Cattura Foto</button>
         <button onClick={() => setShowMedia((v) => !v)} disabled={!photoUrl} style={btn(styles.btnSecondary, !photoUrl)}>
           {showMedia ? "Nascondi Media" : "Mostra Media"}
         </button>
-        <button onClick={handleClear} disabled={!frame} style={btn(styles.btnSecondary, !frame)}>Pulisci Schermo</button>
+        <button onClick={handleClear} disabled={!frame} style={btn(styles.btnSecondary, !frame)}>🧹 Pulisci Schermo</button>
         <div style={{ marginBottom: 8 }}>
-          <button onClick={handleConnect}>🔌 Connetti</button>
           <button onClick={sendMapToFrame} disabled={!frame}>🗺️ Mostra Mappa</button>
           <button onClick={startAutoUpdate}>▶ Auto</button>
           <button onClick={stopAutoUpdate}>■ Stop</button>
         </div>
 
+        <div style={{ marginBottom: 16, textAlign: "center" }}>
+          <input
+            style={styles.input}
+            type="text"
+            placeholder="lat"
+            value={destInput.lat}
+            onChange={(e) => setDestInput({ ...destInput, lat: e.target.value })}
+          />
+          <input
+            style={styles.input}
+            type="text"
+            placeholder="lng"
+            value={destInput.lng}
+            onChange={(e) => setDestInput({ ...destInput, lng: e.target.value })}
+          />
+          <button onClick={handleSetDest} style={btn(styles.btnPrimary, !frame)} disabled={!frame}>
+            📍 Avvia Navigazione
+          </button>
+        </div>
 
-        <button onClick={handleDisconnect} disabled={!frame} style={btn(styles.btnSecondary, !frame)}>Disconnetti</button>
+        <button onClick={handleDisconnect} disabled={!frame} style={btn(styles.btnSecondary, !frame)}>🔌Disconnetti</button>
         <button onClick={handleGenerateImage} disabled={!frame || !prompt} style={btn(styles.btnPrimary, !frame || !prompt)}>🎨 Genera Immagine</button>
       </div>
 
@@ -344,7 +414,7 @@ export default function App() {
         <b>Risposta Gemini:</b>
         <pre style={styles.responsePre}>{response}</pre>
       </div>
-        <div
+      <div
         ref={mapRef}
         style={{
           width: "100%",
@@ -360,83 +430,63 @@ export default function App() {
 }
 
 /* ─────────────── Styles ─────────────── */
-  const styles: Record<string, React.CSSProperties> = {
-    container: {
-      maxWidth: 650,
-      margin: "0 auto",
-      padding: 16,
-      backgroundColor: "#111827",
-      color: "#f3f4f6",
-      fontFamily: "'Helvetica Neue', Arial, sans-serif",
-    },
-    header: { textAlign: "center", fontSize: 24, marginBottom: 16, color: "#60a5fa" },
-    controls: { display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center", marginBottom: 16 },
-    btnPrimary: {
-      padding: "10px 14px",
-      backgroundColor: "#2563eb",
-      color: "#fff",
-      border: "none",
-      borderRadius: 6,
-      cursor: "pointer",
-      flex: 1,
-      minWidth: 120,
-    },
-    btnSecondary: {
-      padding: "10px 14px",
-      backgroundColor: "#059669",
-      color: "#fff",
-      border: "none",
-      borderRadius: 6,
-      cursor: "pointer",
-      flex: 1,
-      minWidth: 120,
-    },
-    btnDisabled: { opacity: 0.5, cursor: "not-allowed" },
-    imageWrapper: { marginTop: 12, textAlign: "center" },
-    image: { maxWidth: "100%", borderRadius: 6, boxShadow: "0 2px 6px rgba(0,0,0,.5)" },
-    textarea: {
-      width: "100%",
-      backgroundColor: "#1f2937",
-      color: "#f3f4f6",
-      border: "1px solid #374151",
-      borderRadius: 6,
-      padding: 10,
-      marginBottom: 12,
-      fontSize: 16,
-    },
-    sendButton: {
-      width: "100%",
-      padding: "12px 0",
-      backgroundColor: "#3b82f6",
-      color: "#fff",
-      border: "none",
-      borderRadius: 6,
-      cursor: "pointer",
-      marginBottom: 16,
-    },
-    status: { textAlign: "center", marginBottom: 8, color: "#9ca3af" },
-    logs: {
-      backgroundColor: "#1f2937",
-      padding: 12,
-      borderRadius: 6,
-      fontSize: 14,
-      color: "#d1d5db",
-      maxHeight: 120,
-      overflowY: "auto",
-      marginBottom: 16,
-    },
-    responsePre: {
-      backgroundColor: "#1f2937",
-      padding: 12,
-      borderRadius: 6,
-      color: "#e5e7eb",
-      whiteSpace: "pre-wrap",
-    },
-    map: {
-      width: "100%",
-      height: 300,
-      borderRadius: 6,
-      boxShadow: "0 2px 6px rgba(0,0,0,.5)",
-      marginBottom: 16,
-    },
-  };
+const styles: Record<string, React.CSSProperties> = {
+  container: {
+    maxWidth: 650,
+    margin: "0 auto",
+    padding: 16,
+    backgroundColor: "#111827",
+    color: "#f3f4f6",
+    fontFamily: "'Helvetica Neue', Arial, sans-serif",
+  },
+  header: { textAlign: "center", fontSize: 24, marginBottom: 16, color: "#60a5fa" },
+  controls: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: 8,
+    justifyContent: "center",
+    marginBottom: 16,
+  },
+  btnPrimary: {
+    padding: "10px 14px",
+    backgroundColor: "#2563eb",
+    color: "#fff",
+    border: "none",
+    borderRadius: 6,
+    cursor: "pointer",
+    flex: 1,
+    minWidth: 120,
+  },
+  btnSecondary: {
+    padding: "10px 14px",
+    backgroundColor: "#059669",
+    color: "#fff",
+    border: "none",
+    borderRadius: 6,
+    cursor: "pointer",
+    flex: 1,
+    minWidth: 120,
+  },
+  btnDisabled: { opacity: 0.5, cursor: "not-allowed" },
+  map: { width: "100%", height: 300, borderRadius: 6, marginBottom: 16 },
+  status: { textAlign: "center", marginBottom: 8, color: "#9ca3af" },
+  logs: {
+    backgroundColor: "#1f2937",
+    padding: 12,
+    borderRadius: 6,
+    fontSize: 14,
+    color: "#d1d5db",
+    maxHeight: 120,
+    overflowY: "auto",
+    marginBottom: 16,
+  },
+  input: {
+    width: 100,
+    marginRight: 8,
+    padding: 6,
+    borderRadius: 4,
+    border: "1px solid #374151",
+    backgroundColor: "#1f2937",
+    color: "#f3f4f6",
+  },
+};
