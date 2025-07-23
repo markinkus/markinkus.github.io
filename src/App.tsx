@@ -105,38 +105,39 @@ export default function App() {
       ).addTo(leafletMap.current);
     }
     if (leafletMap.current && pos) {
-      leafletMap.current.setView([pos.lat, pos.lng]);
-      // rimuovi vecchi marker e rotta
-      leafletMap.current.eachLayer((l) => {
-        if ((l as any)._icon || (l as any)._path) {
-          leafletMap.current!.removeLayer(l);
+      // -- elimino solo i marker (icone e cerchi) --
+      leafletMap.current.eachLayer((layer) => {
+        if (layer instanceof L.Marker || layer instanceof L.CircleMarker) {
+          leafletMap.current!.removeLayer(layer)
         }
-      });
-      // marker utente
+      })
+
+      // -- ricreo i marker utente e POI --
       L.circleMarker([pos.lat, pos.lng], {
         radius: 6,
         color: "#00ffff",
         fillColor: "#00ffff",
         fillOpacity: 0.8,
       }).addTo(leafletMap.current);
-      // se c’è destinazione, traccia rotta
+      poiList.forEach(poi =>
+        L.marker([poi.lat, poi.lng]).addTo(leafletMap.current!)
+      )
+
+      // -- se ho una destinazione, calcolo e disegno la rotta --
       if (dest) {
-        fetch(
-          `${OSRM_URL}/route/v1/driving/${pos.lng},${pos.lat};${dest.lng},${dest.lat}` +
-          `?overview=full&geometries=geojson`
-        )
-          .then((r) => r.json())
-          .then((js) => {
+        fetch(`${OSRM_URL}/route/v1/driving/${pos.lng},${pos.lat};${dest.lng},${dest.lat}?overview=full&geometries=geojson`)
+          .then(r => r.json())
+          .then(js => {
             const coords = js.routes[0].geometry.coordinates.map(
-              ([lng, lat]: [number, number]) => [lat, lng] as [number, number]
+              ([lng, lat]: [number, number]): [number, number] => [lat, lng]
             );
-            routeLayer.current?.remove();
-            routeLayer.current = L.polyline(coords, {
-              color: "red",
-              weight: 4,
-            }).addTo(leafletMap.current!);
+
+            // rimuovo la vecchia rotta, se esiste
+            if (routeLayer.current) leafletMap.current!.removeLayer(routeLayer.current)
+            // ne aggiungo una nuova
+            routeLayer.current = L.polyline(coords, { color: 'red', weight: 4 })
+              .addTo(leafletMap.current!)
           })
-          .catch((e) => console.warn("OSRM error", e));
       }
     }
   }, [pos, dest]);
@@ -191,7 +192,7 @@ export default function App() {
         canvas.toBlob(b => b ? res(b) : rej("toBlob fallito"), "image/jpeg", 0.9)
       );
       const arr = await blob.arrayBuffer();
-      const sprite = await TxSprite.fromImageBytes(arr, 40000);
+      const sprite = await TxSprite.fromImageBytes(arr, 36000);
 
       await frame.sendMessage(0x20, sprite.pack());
       addLog("✔ mappa inviata");
@@ -265,7 +266,7 @@ export default function App() {
       setPhotoUrl(origUrl);
       setShowMedia(true);
 
-      const sprite = await TxSprite.fromImageBytes(imgBytes, 40000);
+      const sprite = await TxSprite.fromImageBytes(imgBytes, 36000);
       // toPngBytes non è tipizzato nelle declarations → cast any
       const pngBytes: Uint8Array | undefined = (sprite as any).toPngBytes?.();
       if (pngBytes) setSpriteUrl(blobUrl(pngBytes, "image/png"));
