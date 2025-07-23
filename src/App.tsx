@@ -191,88 +191,41 @@ export default function App() {
       setStatus("Errore disconnect: " + e.message);
     }
   };
-  const handleShowMap = async () => {
-    if (!frame) return setStatus("Connetti prima gli occhiali!");
-    setStatus("Caricamento minimappa…");
-    setMapLoading(true);
-    addLog("▶ handleShowMap");
-
-    navigator.geolocation.getCurrentPosition(
-      async (pos) => {
-        try {
-          const lat = pos.coords.latitude.toFixed(5);
-          const lng = pos.coords.longitude.toFixed(5);
-          addLog(`• coords ${lat},${lng}`);
-
-          const url = `https://staticmap.openstreetmap.de/staticmap.php?center=${lat},${lng}&zoom=15&size=200x200`;
-          const blob = await (await fetch(url)).blob();
-
-          // disegna freccia direzione sul canvas
-          const dataUrl = await new Promise<string>((res) => {
-            const fr = new FileReader();
-            fr.onload = () => res(fr.result as string);
-            fr.readAsDataURL(blob);
-          });
-          const img = await new Promise<HTMLImageElement>((res, rej) => {
-            const i = new Image();
-            i.crossOrigin = "anonymous";
-            i.onload = () => res(i);
-            i.onerror = () => rej(new Error("load failed"));
-            i.src = dataUrl;
-          });
-
-
-          const canvas = document.createElement("canvas");
-          canvas.width = canvas.height = 200;
-          const ctx = canvas.getContext("2d")!;
-          ctx.drawImage(img, 0, 0, 200, 200);
-          ctx.save();
-          ctx.translate(100, 100);
-          ctx.rotate((heading * Math.PI) / 180);
-          ctx.fillStyle = "rgba(255,0,0,0.8)";
-          ctx.beginPath();
-          ctx.moveTo(0, -60);
-          ctx.lineTo(10, -40);
-          ctx.lineTo(-10, -40);
-          ctx.closePath();
-          ctx.fill();
-          ctx.restore();
-
-          const finalBlob = await new Promise<Blob>((resolve, reject) => {
-            if (!canvas.toBlob) {
-              return reject(new Error("toBlob non supportato"));
-            }
-            canvas.toBlob((b) => {
-              if (b) resolve(b);
-              else reject(new Error("toBlob fallito"));
-            }, "image/png", 0.8);
-          });
-
-          const sprite = await TxSprite.fromImageBytes(
-            await finalBlob.arrayBuffer(),
-            20000
-          );
-
-          setStatus("Invio minimappa…");
-          await frame.sendMessage(0x20, sprite.pack());
-          addLog("✔ minimappa inviata");
-          setStatus("Minimappa mostrata sugli occhiali!");
-        } catch (err: any) {
-          addLog("✖ showMap error: " + err.message);
-          setStatus("Errore minimappa: " + err.message);
-        } finally {
-          setMapLoading(false);
-        }
-      },
-      (err) => {
-        addLog("✖ Geolocation error: " + err.message);
-        setStatus("Errore geolocazione: " + err.message);
-        setMapLoading(false);
-      }
-    );
+  const handleShowMiniMap = async () => {
+    if (!frame) return;
+    setStatus("Disegno minimappa vettoriale…");
+    addLog("▶ handleShowMiniMap");
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = canvas.height = 160;
+      const ctx = canvas.getContext("2d")!;
+      ctx.fillStyle = "white";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.strokeStyle = "#555";
+      ctx.lineWidth = 3;
+      ctx.strokeRect(10, 10, 140, 140);
+      ctx.fillStyle = "#10b981";
+      ctx.beginPath();
+      ctx.arc(80, 80, 5, 0, 2 * Math.PI);
+      ctx.fill();
+      ctx.fillStyle = "#ef4444";
+      ctx.beginPath();
+      ctx.moveTo(80, 80);
+      ctx.lineTo(90, 70);
+      ctx.lineTo(70, 70);
+      ctx.closePath();
+      ctx.fill();
+      const blob = await new Promise<Blob>((resolve) => canvas.toBlob((b) => resolve(b!), "image/jpeg"));
+      const sprite = await TxSprite.fromImageBytes(await blob.arrayBuffer(), 20000);
+      await frame.sendMessage(0x20, sprite.pack());
+      addLog("✔ minimappa vettoriale inviata");
+      setStatus("Minimappa mostrata!");
+    } catch (e: any) {
+      addLog("✖ minimap error: " + e.message);
+      setStatus("Errore minimappa: " + e.message);
+    }
   };
 
-  /* ─────────────── UI ─────────────── */
   const btn = (st: any, dis = false) => ({ ...st, ...(dis ? styles.btnDisabled : {}) });
 
   return (
@@ -286,13 +239,7 @@ export default function App() {
           {showMedia ? "Nascondi Media" : "Mostra Media"}
         </button>
         <button onClick={handleClear} disabled={!frame} style={btn(styles.btnSecondary, !frame)}>Pulisci Schermo</button>
-        <button
-          onClick={handleShowMap}
-          disabled={!frame || mapLoading}
-          style={btn(styles.btnSecondary, !frame || mapLoading)}
-        >
-          {mapLoading ? "🗺️ Caricamento…" : "🗺️ Mostra Mappa"}
-        </button>
+        <button onClick={handleShowMiniMap} disabled={!frame} style={btn(styles.btnSecondary, !frame)}>🗺️ Minimappa Vettoriale</button>
 
         <button onClick={handleDisconnect} disabled={!frame} style={btn(styles.btnSecondary, !frame)}>Disconnetti</button>
         <button onClick={handleGenerateImage} disabled={!frame || !prompt} style={btn(styles.btnPrimary, !frame || !prompt)}>🎨 Genera Immagine</button>
