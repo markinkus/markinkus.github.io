@@ -224,45 +224,46 @@ export default function App() {
     }
   };
   /* ─────────────── MiniMap ─────────────── */
-const sendMapToFrame = async () => {
-  if (!frame) return setStatus("Connetti prima gli occhiali!");
-  if (!mapRef.current) return setStatus("Mappa non trovata");
+  const sendMapToFrame = async () => {
+    if (!frame) return setStatus("Connetti prima gli occhiali!");
+    if (!mapRef.current) return setStatus("Mappa non trovata");
 
-  setStatus("Generazione snapshot mappa…");
-  addLog("▶ sendMapToFrame");
+    setStatus("Generazione snapshot mappa…");
+    addLog("▶ sendMapToFrame");
 
-  try {
-    const canvas = await html2canvas(mapRef.current, {
-      useCORS: true,
-      allowTaint: false,
-      backgroundColor: "#ffffff",
-      logging: true
-    });
+    try {
+      console.log("mapRef current size:", mapRef.current?.offsetWidth, mapRef.current?.offsetHeight);
+      const canvas = await html2canvas(mapRef.current, {
+        useCORS: true,
+        allowTaint: false,
+        backgroundColor: "#ffffff",
+        logging: true
+      });
 
-    // sicurezza: aspetta 100ms per garantire rendering
-    await new Promise((res) => setTimeout(res, 100));
+      // sicurezza: aspetta 100ms per garantire rendering
+      await new Promise((res) => setTimeout(res, 100));
 
-    const blob: Blob = await new Promise((resolve, reject) => {
-      canvas.toBlob((b) => {
-        if (b) resolve(b);
-        else reject(new Error("toBlob fallito: canvas è nullo"));
-      }, "image/jpeg", 0.9);
-    });
+      const blob: Blob = await new Promise((resolve, reject) => {
+        canvas.toBlob((b) => {
+          if (b) resolve(b);
+          else reject(new Error("toBlob fallito: canvas è nullo"));
+        }, "image/jpeg", 0.9);
+      });
 
-    const sprite = await TxSprite.fromImageBytes(
-      await blob.arrayBuffer(),
-      25000, // sprite max pixels
-      true   // compress
-    );
+      const sprite = await TxSprite.fromImageBytes(
+        await blob.arrayBuffer(),
+        25000, // sprite max pixels
+        true   // compress
+      );
 
-    await frame.sendMessage(0x20, sprite.pack());
-    addLog("✔ snapshot mappa inviata");
-    setStatus("Mappa mostrata sugli occhiali!");
-  } catch (e: any) {
-    addLog("✖ map error: " + e.message);
-    setStatus("Errore mappa: " + e.message);
-  }
-};
+      await frame.sendMessage(0x20, sprite.pack());
+      addLog("✔ snapshot mappa inviata");
+      setStatus("Mappa mostrata sugli occhiali!");
+    } catch (e: any) {
+      addLog("✖ map error: " + e.message);
+      setStatus("Errore mappa: " + e.message);
+    }
+  };
 
 
   const startAutoUpdate = () => {
@@ -293,15 +294,27 @@ const sendMapToFrame = async () => {
           {showMedia ? "Nascondi Media" : "Mostra Media"}
         </button>
         <button onClick={handleClear} disabled={!frame} style={btn(styles.btnSecondary, !frame)}>Pulisci Schermo</button>
-      <div style={{ marginBottom: 8 }}>
-        <button onClick={handleConnect}>🔌 Connetti</button>
-        <button onClick={sendMapToFrame} disabled={!frame}>🗺️ Mostra Mappa</button>
-        <button onClick={startAutoUpdate}>▶ Auto</button>
-        <button onClick={stopAutoUpdate}>■ Stop</button>
-      </div>
-      <div style={{ display: "none" }}>
-        <div id="map" ref={mapRef} style={{ width: 240, height: 240 }}></div>
-      </div>
+        <div style={{ marginBottom: 8 }}>
+          <button onClick={handleConnect}>🔌 Connetti</button>
+          <button onClick={sendMapToFrame} disabled={!frame}>🗺️ Mostra Mappa</button>
+          <button onClick={startAutoUpdate}>▶ Auto</button>
+          <button onClick={stopAutoUpdate}>■ Stop</button>
+        </div>
+        <div
+          id="map"
+          ref={mapRef}
+          style={{
+            width: 240,
+            height: 240,
+            position: "absolute",
+            top: "-10000px",
+            left: "-10000px",
+            opacity: 0,
+            pointerEvents: "none",
+            zIndex: -999,
+          }}
+        ></div>
+
         <button onClick={handleDisconnect} disabled={!frame} style={btn(styles.btnSecondary, !frame)}>Disconnetti</button>
         <button onClick={handleGenerateImage} disabled={!frame || !prompt} style={btn(styles.btnPrimary, !frame || !prompt)}>🎨 Genera Immagine</button>
       </div>
