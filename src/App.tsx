@@ -252,8 +252,7 @@ export default function App() {
 
       const sprite = await TxSprite.fromImageBytes(
         await blob.arrayBuffer(),
-        25000, // sprite max pixels
-        true   // compress
+        25000
       );
 
       await frame.sendMessage(0x20, sprite.pack());
