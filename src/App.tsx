@@ -11,6 +11,7 @@ import markinoFrameApp from "../lua/markino_frame_app.lua?raw";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import html2canvas from "html2canvas";
+import leafletImage from "leaflet-image";
 
 const GEMINI_API_KEY = "AIzaSyCUspjopyRDqf8iR-ftL7UsPyaYfAt1p_M";
 const OSRM_URL = "https://router.project-osrm.org";
@@ -172,26 +173,25 @@ export default function App() {
     if (!frame || !mapRef.current) return setStatus("Init mappa o frame");
     setStatus("Snap mappa…");
     addLog("▶ sendMapToFrame");
-    try {
-      const canvas = await html2canvas(mapRef.current, {
-        useCORS: true,
-        backgroundColor: "#111827",
-        scale: 2,
-      });
-      const blob: Blob = await new Promise((res, rej) =>
-        canvas.toBlob((b) => (b ? res(b) : rej("toBlob fallito")), "image/jpeg", 0.9)
-      );
-      const sprite = await TxSprite.fromImageBytes(
-        await blob.arrayBuffer(),
-        30000
-      );
-      await frame.sendMessage(0x20, sprite.pack());
-      addLog("✔ mappa inviata");
-      setStatus("Mappa mostrata!");
-    } catch (e: any) {
-      addLog("✖ mappa error: " + e);
-      setStatus("Errore mappa");
-    }
+   leafletImage(leafletMap.current!, (err: any, canvas: HTMLCanvasElement) => {
+     if (err) {
+       addLog("✖ leaflet-image error: " + err);
+       setStatus("Errore snapshot");
+       return;
+     }
+     canvas.toBlob(async (blob) => {
+       if (!blob) {
+         addLog("✖ toBlob fallito");
+         setStatus("Errore blob");
+         return;
+       }
+       const arr = await blob.arrayBuffer();
+       const sprite = await TxSprite.fromImageBytes(arr, 35000);
+       await frame.sendMessage(0x20, sprite.pack());
+       addLog("✔ mappa inviata");
+       setStatus("Mappa mostrata!");
+     }, "image/jpeg", 0.9);
+   });
   };
 
   // ───────── Auto‐update ogni 5s ─────────
@@ -328,7 +328,7 @@ export default function App() {
     // batteria/memoria
     const battMem = await frame.sendLua(
       'print(frame.battery_level() .. " / " .. collectgarbage("count"))',
-      true
+      { showMe: true }
     );
     // meteo
     let weatherStr = "meteo sconosciuto";

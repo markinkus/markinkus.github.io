@@ -1,0 +1,1 @@
+import leafletImage from "leaflet-image";
