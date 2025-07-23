@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   FrameMsg,
   StdLua,
@@ -49,7 +49,14 @@ export default function App() {
   const [logs, setLogs] = useState<string[]>([]);
   const [heading, setHeading] = useState(0);
   const [mapLoading, setMapLoading] = useState(false);
-  const [battMem, setBattMem] = useState<string | null>(null);
+  const [pos, setPos] = useState<{ lat: number; lng: number } | null>(null);
+  const [zoom, setZoom] = useState(1.5);
+  const refreshRef = useRef<NodeJS.Timeout | null>(null);
+
+  const poiList = [
+    { name: "Bar", lat: 40.8367, lng: 16.5931 },
+    { name: "Casa", lat: 40.8362, lng: 16.5925 },
+  ];
 
   const addLog = (m: string) => setLogs((l) => [...l.slice(-19), m]);
 
@@ -60,6 +67,13 @@ export default function App() {
     };
     window.addEventListener("deviceorientation", onOrient);
     return () => window.removeEventListener("deviceorientation", onOrient);
+  }, []);
+
+  useEffect(() => {
+    const geoId = navigator.geolocation.watchPosition((p) => {
+      setPos({ lat: p.coords.latitude, lng: p.coords.longitude });
+    });
+    return () => navigator.geolocation.clearWatch(geoId);
   }, []);
 
   /* ─────────────── Connect & init ─────────────── */
@@ -185,46 +199,88 @@ export default function App() {
       await frame.stopFrameApp();
       await frame.disconnect();
       setFrame(null);
-      setBattMem(null);
       setStatus("Disconnesso");
     } catch (e: any) {
       setStatus("Errore disconnect: " + e.message);
     }
   };
-  const handleShowMiniMap = async () => {
-    if (!frame) return;
-    setStatus("Disegno minimappa vettoriale…");
-    addLog("▶ handleShowMiniMap");
-    try {
-      const canvas = document.createElement("canvas");
-      canvas.width = canvas.height = 160;
-      const ctx = canvas.getContext("2d")!;
-      ctx.fillStyle = "white";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.strokeStyle = "#555";
-      ctx.lineWidth = 3;
-      ctx.strokeRect(10, 10, 140, 140);
-      ctx.fillStyle = "#10b981";
+  /* ─────────────── MiniMap ─────────────── */
+  const drawMinimap = async () => {
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = 240;
+    const ctx = canvas.getContext("2d")!;
+
+    ctx.fillStyle = "#fdfdfd";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.strokeStyle = "#444";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(20, 20, 200, 200);
+
+    if (pos) {
+      const centerX = 120, centerY = 120;
+
+      ctx.save();
+      ctx.translate(centerX, centerY);
+      ctx.rotate((heading * Math.PI) / 180);
+      ctx.fillStyle = "#f00";
       ctx.beginPath();
-      ctx.arc(80, 80, 5, 0, 2 * Math.PI);
-      ctx.fill();
-      ctx.fillStyle = "#ef4444";
-      ctx.beginPath();
-      ctx.moveTo(80, 80);
-      ctx.lineTo(90, 70);
-      ctx.lineTo(70, 70);
+      ctx.moveTo(0, -40);
+      ctx.lineTo(8, -20);
+      ctx.lineTo(-8, -20);
       ctx.closePath();
       ctx.fill();
-      const blob = await new Promise<Blob>((resolve) => canvas.toBlob((b) => resolve(b!), "image/jpeg"));
-      const sprite = await TxSprite.fromImageBytes(await blob.arrayBuffer(), 20000);
+      ctx.restore();
+
+      ctx.fillStyle = "#000";
+      ctx.font = "12px sans-serif";
+      ctx.fillText(pos.lat.toFixed(4) + "," + pos.lng.toFixed(4), 10, 230);
+
+      ctx.fillStyle = "#00f";
+      poiList.forEach((poi) => {
+        const dx = (poi.lng - pos.lng) * 100000 * zoom;
+        const dy = (poi.lat - pos.lat) * -100000 * zoom;
+        const x = centerX + dx;
+        const y = centerY + dy;
+        if (x >= 20 && x <= 220 && y >= 20 && y <= 220) {
+          ctx.beginPath();
+          ctx.arc(x, y, 4, 0, 2 * Math.PI);
+          ctx.fill();
+          ctx.fillText(poi.name, x + 6, y);
+        }
+      });
+    }
+
+    const blob = await new Promise<Blob>((res) => canvas.toBlob((b) => res(b!), "image/jpeg"));
+    return TxSprite.fromImageBytes(await blob.arrayBuffer(), 20000);
+  };
+
+  const handleShowMiniMap = async () => {
+    if (!frame) return;
+    setStatus("Aggiornamento mappa…");
+    addLog("▶ handleShowMiniMap");
+    try {
+      const sprite = await drawMinimap();
       await frame.sendMessage(0x20, sprite.pack());
-      addLog("✔ minimappa vettoriale inviata");
-      setStatus("Minimappa mostrata!");
+      addLog("✔ minimappa aggiornata");
+      setStatus("Minimappa aggiornata!");
     } catch (e: any) {
       addLog("✖ minimap error: " + e.message);
       setStatus("Errore minimappa: " + e.message);
     }
   };
+
+  const startAutoRefresh = () => {
+    if (refreshRef.current) clearInterval(refreshRef.current);
+    refreshRef.current = setInterval(handleShowMiniMap, 5000);
+    addLog("▶ auto-refresh attivo");
+  };
+
+  const stopAutoRefresh = () => {
+    if (refreshRef.current) clearInterval(refreshRef.current);
+    refreshRef.current = null;
+    addLog("⏹️ auto-refresh fermato");
+  };
+
 
   const btn = (st: any, dis = false) => ({ ...st, ...(dis ? styles.btnDisabled : {}) });
 
@@ -239,8 +295,11 @@ export default function App() {
           {showMedia ? "Nascondi Media" : "Mostra Media"}
         </button>
         <button onClick={handleClear} disabled={!frame} style={btn(styles.btnSecondary, !frame)}>Pulisci Schermo</button>
-        <button onClick={handleShowMiniMap} disabled={!frame} style={btn(styles.btnSecondary, !frame)}>🗺️ Minimappa Vettoriale</button>
-
+        <button onClick={handleShowMiniMap} disabled={!frame}>📍 Mappa</button>
+        <button onClick={() => setZoom((z) => Math.min(z + 0.5, 5))}>🔍 Zoom +</button>
+        <button onClick={() => setZoom((z) => Math.max(z - 0.5, 0.5))}>🔎 Zoom -</button>
+        <button onClick={startAutoRefresh} disabled={!frame}>▶ Auto-Refresh</button>
+        <button onClick={stopAutoRefresh}>⏹ Stop</button>
         <button onClick={handleDisconnect} disabled={!frame} style={btn(styles.btnSecondary, !frame)}>Disconnetti</button>
         <button onClick={handleGenerateImage} disabled={!frame || !prompt} style={btn(styles.btnPrimary, !frame || !prompt)}>🎨 Genera Immagine</button>
       </div>
@@ -261,7 +320,7 @@ export default function App() {
       <textarea rows={3} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Prompt…" style={styles.textarea} />
       <button onClick={handleSend} disabled={!frame && !prompt} style={btn(styles.sendButton, !frame && !prompt)}>Invia a Gemini & Frame</button>
 
-      <div style={styles.status}><b>Stato:</b> {status} {battMem && `| 🔋 ${battMem}`}</div>
+      <div style={styles.status}><b>Stato:</b> {status}</div>
       <pre style={styles.logs}>{logs.join("\n")}</pre>
       <div style={styles.response}>
         <b>Risposta Gemini:</b>
