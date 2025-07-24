@@ -236,21 +236,24 @@ const sendMapIndexed = async () => {
   addLog("▶ sendMapIndexed");
 
   // 1) render HTML → canvas (scale=1 per tenere sotto controllo dimensioni)
-  const canvas = await html2canvas(mapRef.current!, {
-    useCORS: true,
-    allowTaint: false,
-    backgroundColor: "#111827",
-    scale: 1,
-  });
-  const w = canvas.width, h = canvas.height;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) {
-    setStatus("Errore canvas");
-    return;
-  }
-  const imgData = ctx.getImageData(0, 0, w, h);
-
-  // 2) palette fissa 2-bit (4 colori)
+    const canvas = await html2canvas(mapRef.current, {
+      useCORS: true,
+      backgroundColor: "#111827",
+      scale: 2,
+    });
+    const w = canvas.width, h = canvas.height;
+    const ctx = canvas.getContext("2d")!;
+    const imgData = ctx.getImageData(0, 0, w, h);
+  setStatus("📸 Canvas in gestione…");
+  addLog("▶ Canvas in gestione");
+    // 2) Palette 2-bit (4 colori RGBA)
+    // const paletteRGBA = new Uint8Array([
+    //   0,   0,   0, 255,   // 0 = nero (sfondo)
+    //   0, 128,   0, 255,   // 1 = verde (strade)
+    // 128,   0,   0, 255,   // 2 = rosso  (POI/evidenze)
+    //   0, 200, 255, 255,   // 3 = azzurro(percorso)
+    // ]);
+      // 2) palette fissa 2-bit (4 colori)
   const paletteRGBA: number[] = [
     // R,   G,   B,   A
       0,   0,   0, 255,   // 0 = nero (sfondo)
@@ -259,21 +262,25 @@ const sendMapIndexed = async () => {
       0, 200, 255, 255    // 3 = azzurro(percorso)
   ];
 
-  // 3) encode Indexed-PNG
-  // imgData.data.buffer è ArrayBufferLike, lo castiamo ad ArrayBuffer
-  const upngBuf = UPNG.encode(
-    [imgData.data.buffer as ArrayBuffer],
-    w,
-    h,
-    2,           // bitDepth
-    paletteRGBA
-  );
-  const indexedPNG = upngBuf as ArrayBuffer;
-
+    // 3) Encode in PNG indicizzato 2-bit
+    //    UPNG.encode(buffers, width, height, bitDepth, palette?)
+    const upngBuf = UPNG.encode(
+      [ imgData.data.buffer as ArrayBuffer ],
+      w, h,
+      2,             // bitDepth
+      paletteRGBA
+    ) as ArrayBuffer;
+    setStatus("📸 Indexed-PNG in gestione…")
+    addLog("▶ Indexed-PNG in gestione")
+    ;
   // 4) crea lo sprite e invia allo Frame
-  const pngBytes = new Uint8Array(indexedPNG);
-  const sprite = await TxSprite.fromIndexedPngBytes(pngBytes.buffer, /* compress */ true);
-  await frame.sendMessage(0x20, sprite.pack());
+    const pngBytes = new Uint8Array(upngBuf);
+    setStatus("📸 Sprite in gestione…")
+    addLog("▶ Sprite in gestione");
+    const sprite = await TxSprite.fromIndexedPngBytes(pngBytes.buffer, /* compress */ true);
+    setStatus("📸 Sprite pronto…")
+    addLog("▶ Sprite pronto");
+    await frame.sendMessage(0x20, sprite.pack());
 
   addLog("✔ Indexed-PNG inviata");
   setStatus("Mappa Indexed-PNG mostrata!");
