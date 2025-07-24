@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef } from "react";
-import * as UPNG from "upng-js";
 import {
   FrameMsg,
   StdLua,
@@ -156,7 +155,7 @@ export default function App() {
           );
           routeLayer.current = L.polyline(coords, {
             color: "#00C8FF",
-            weight: 5,
+            weight: 8,
           }).addTo(leafletMap.current!);
         })
         .catch((e) => console.warn("OSRM error", e));
@@ -225,70 +224,6 @@ export default function App() {
     }
   };
 
- 
-// 2) sostituisci il tuo sendMapIndexed con questa:
-
-async function sendMapIndexed() {
-  if (!frame || !leafletMap.current || !mapRef.current) {
-    setStatus("Errore: init mappa o frame");
-    return;
-  }
-  setStatus("📸 Snap Indexed-PNG…");
-  addLog("▶ sendMapIndexed start");
-
-  // forza redraw e aspetta un attimo che leaflet termini il painting
-  leafletMap.current.invalidateSize();
-  await new Promise((r) => setTimeout(r, 500));
-  addLog("▶ map.invalidateSize + delay");
-
-  // cattura canvas di tutto il div
-  const canvas = await html2canvas(mapRef.current, {
-    useCORS: true,
-    backgroundColor: "#111827",
-    scale: 1, 
-  });
-  const w = canvas.width, h = canvas.height;
-  const ctx = canvas.getContext("2d")!;
-  const img = ctx.getImageData(0, 0, w, h);
-  addLog(`▶ got ImageData ${w}×${h}`);
-
-  // 4 colori RGBA (2-bit)
-  const palette = new Uint8Array([
-    0,   0,   0, 255,   // 0 = nero (sfondo)
-    0, 128,   0, 255,   // 1 = verde (strade + POI)
-    128,   0,   0, 255, // 2 = rosso  (altre evidenze, se serve)
-    0, 200, 255, 255    // 3 = azzurro (percorso)
-  ]);
-
-  // quantizza pixel-by-pixel sul palette index 0–3
-  const pixelData = new Uint8Array(w * h);
-  for (let i = 0; i < w * h; i++) {
-    const r = img.data[i*4], g = img.data[i*4+1], b = img.data[i*4+2];
-    let bestI = 0, bestD = Infinity;
-    for (let c = 0; c < 4; c++) {
-      const pr = palette[c*4], pg = palette[c*4+1], pb = palette[c*4+2];
-      const dr = r - pr, dg = g - pg, db = b - pb;
-      const d2 = dr*dr + dg*dg + db*db;
-      if (d2 < bestD) { bestD = d2; bestI = c; }
-    }
-    pixelData[i] = bestI;
-  }
-  addLog("▶ quantizzazione completata");
-
-  // costruisci e invia lo sprite (con LZ4)
-  const sprite = new TxSprite(
-    w, h,      // width, height
-    4,         // numColors
-    palette,   // paletteData
-    pixelData, // pixelData
-    true       // compress
-  );
-  addLog("▶ TxSprite creato, invio…");
-
-  await frame.sendMessage(0x20, sprite.pack());
-  addLog("✔ Indexed-PNG inviata");
-  setStatus("Mappa mostrata!");
-}
   // ───────── Auto‐update ogni 5s ─────────
   const startAutoUpdate = () => {
     if (autoUpdateRef.current) return;
@@ -458,7 +393,7 @@ async function sendMapIndexed() {
         </button>
         <button onClick={handleClear} disabled={!frame} style={btn(styles.btnSecondary, !frame)}>🧹 Pulisci Schermo</button>
         <div style={{ marginBottom: 8 }}>
-          <button onClick={sendMapIndexed} disabled={!frame}>🗺️ Mostra Mappa</button>
+          <button onClick={sendMapToFrame} disabled={!frame}>🗺️ Mostra Mappa</button>
           <button onClick={startAutoUpdate}>▶ Auto</button>
           <button onClick={stopAutoUpdate}>■ Stop</button>
         </div>
