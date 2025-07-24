@@ -226,66 +226,57 @@ export default function App() {
   };
 
   
-
-const sendMapIndexed = async () => {
+async function sendMapIndexed() {
   if (!frame || !mapRef.current) {
-    setStatus("Errore: init mappa o frame");
+    setStatus("Init mappa o frame");
     return;
   }
   setStatus("📸 Snap Indexed-PNG…");
   addLog("▶ sendMapIndexed");
 
-  // 1) render HTML → canvas (scale=1 per tenere sotto controllo dimensioni)
+  try {
+    // 1) render HTML → canvas
     const canvas = await html2canvas(mapRef.current, {
       useCORS: true,
       backgroundColor: "#111827",
-      scale: 1,
+      scale: 2, // abbassa se serve meno risoluzione
     });
-    const w = canvas.width, h = canvas.height;
+    const w = canvas.width;
+    const h = canvas.height;
     const ctx = canvas.getContext("2d")!;
     const imgData = ctx.getImageData(0, 0, w, h);
-  setStatus("📸 Canvas in gestione…");
-  addLog("▶ Canvas in gestione");
-    // 2) Palette 2-bit (4 colori RGBA)
-    // const paletteRGBA = new Uint8Array([
-    //   0,   0,   0, 255,   // 0 = nero (sfondo)
-    //   0, 128,   0, 255,   // 1 = verde (strade)
-    // 128,   0,   0, 255,   // 2 = rosso  (POI/evidenze)
-    //   0, 200, 255, 255,   // 3 = azzurro(percorso)
-    // ]);
-      // 2) palette fissa 2-bit (4 colori)
-  const paletteRGBA: number[] = [
-    // R,   G,   B,   A
+
+    // 2) palette fissa 2-bit (4 colori) come number[]
+    const paletteRGBA: number[] = [
       0,   0,   0, 255,   // 0 = nero (sfondo)
       0, 128,   0, 255,   // 1 = verde (strade)
-    128,   0,   0, 255,   // 2 = rosso  (poi / evidenziazioni)
+      128,   0,   0, 255, // 2 = rosso  (POI/evidenze)
       0, 200, 255, 255    // 3 = azzurro(percorso)
-  ];
+    ];
 
-    // 3) Encode in PNG indicizzato 2-bit
-    //    UPNG.encode(buffers, width, height, bitDepth, palette?)
+    // 3) encode PNG indicizzato 2-bit
     const upngBuf = UPNG.encode(
       [ imgData.data.buffer as ArrayBuffer ],
       w, h,
-      2,             // bitDepth
-      paletteRGBA
+      2,            // bitDepth
+      paletteRGBA  // palette
     ) as ArrayBuffer;
-    setStatus("📸 Indexed-PNG in gestione…")
-    addLog("▶ Indexed-PNG in gestione")
-    ;
-  // 4) crea lo sprite e invia allo Frame
-    const pngBytes = new Uint8Array(upngBuf);
-    setStatus("📸 Sprite in gestione…")
-    addLog("▶ Sprite in gestione");
-    const sprite = await TxSprite.fromIndexedPngBytes(pngBytes.buffer, /* compress */ true);
-    setStatus("📸 Sprite pronto…")
-    addLog("▶ Sprite pronto");
+    const pngArr = new Uint8Array(upngBuf);
+
+    // 4) crea sprite con palette esatta (passa pngArr.buffer, non pngArr)
+    const sprite = await TxSprite.fromIndexedPngBytes(
+      pngArr.buffer
+    );
     await frame.sendMessage(0x20, sprite.pack());
 
-  addLog("✔ Indexed-PNG inviata");
-  setStatus("Mappa Indexed-PNG mostrata!");
-};
-
+    addLog("✔ Indexed-PNG inviata");
+    setStatus("Mappa Indexed-PNG mostrata!");
+  } catch (e: any) {
+    console.error(e);
+    addLog("✖ sendMapIndexed error: " + e.message);
+    setStatus("Errore Indexed-PNG");
+  }
+}
   // ───────── Auto‐update ogni 5s ─────────
   const startAutoUpdate = () => {
     if (autoUpdateRef.current) return;
