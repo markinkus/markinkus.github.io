@@ -226,56 +226,72 @@ export default function App() {
   };
 
   
+
 async function sendMapIndexed() {
-  if (!frame || !mapRef.current) {
-    setStatus("Init mappa o frame");
+  if (!frame || !leafletMap.current) {
+    setStatus("Errore: init mappa o frame");
     return;
   }
   setStatus("📸 Snap Indexed-PNG…");
   addLog("▶ sendMapIndexed");
 
-  try {
-    // 1) render HTML → canvas
-    const canvas = await html2canvas(mapRef.current, {
-      useCORS: true,
-      backgroundColor: "#111827",
-      scale: 1, // abbassa se serve meno risoluzione
-    });
+  leafletImage(leafletMap.current, async (err, canvas) => {
+    if (err) {
+      addLog("✖ leaflet-image error: " + err);
+      setStatus("Errore snapshot");
+      return;
+    }
+
     const w = canvas.width;
     const h = canvas.height;
     const ctx = canvas.getContext("2d")!;
-    const imgData = ctx.getImageData(0, 0, w, h);
+    const img = ctx.getImageData(0, 0, w, h);
 
-    // 2) palette fissa 2-bit (4 colori) come number[]
-    const paletteRGBA: number[] = [
-      0,   0,   0, 255,   // 0 = nero (sfondo)
-      0, 128,   0, 255,   // 1 = verde (strade)
-      128,   0,   0, 255, // 2 = rosso  (POI/evidenze)
-      0, 200, 255, 255    // 3 = azzurro(percorso)
-    ];
+    // 1) la TUÀ palette RGBA (4 colori → 2 bit/pixel)
+    const palette = new Uint8Array([
+      /* 0 = sfondo nero */   0,   0,   0, 255,
+      /* 1 = strade verdi */  0, 128,   0, 255,
+      /* 2 = POI rossi  */  128,   0,   0, 255,
+      /* 3 = percorso azzurro */ 0, 200, 255, 255
+    ]);
 
-    // 3) encode PNG indicizzato 2-bit
-    const upngBuf = UPNG.encode(
-      [ imgData.data.buffer as ArrayBuffer ],
-      w, h,
-      2,            // bitDepth
-      paletteRGBA  // palette
-    ) as ArrayBuffer;
-    const pngArr = new Uint8Array(upngBuf);
+    // 2) quantizza pixel → indice [0..3]
+    const pixelData = new Uint8Array(w*h);
+    for (let i = 0; i < w*h; i++) {
+      const r = img.data[i*4],
+            g = img.data[i*4+1],
+            b = img.data[i*4+2];
+      // scegli il colore di palette con distanza euclidea minima
+      let bestIdx = 0, bestDist = Infinity;
+      for (let c = 0; c < 4; c++) {
+        const pr = palette[c*4],
+              pg = palette[c*4+1],
+              pb = palette[c*4+2];
+        const dr = r-pr, dg = g-pg, db = b-pb;
+        const d2 = dr*dr + dg*dg + db*db;
+        if (d2 < bestDist) {
+          bestDist = d2;
+          bestIdx = c;
+        }
+      }
+      pixelData[i] = bestIdx;
+    }
 
-    // 4) crea sprite con palette esatta (passa pngArr.buffer, non pngArr)
-    const sprite = await TxSprite.fromIndexedPngBytes(
-      pngArr.buffer
+    // 3) crea lo sprite con palette e pixelData
+    const sprite = new TxSprite(
+      w,         // width
+      h,         // height
+      4,         // numColors
+      palette,   // paletteData
+      pixelData, // pixelData
+      true       // compress (lz4)
     );
-    await frame.sendMessage(0x20, sprite.pack());
 
+    // 4) invia
+    await frame.sendMessage(0x20, sprite.pack());
     addLog("✔ Indexed-PNG inviata");
-    setStatus("Mappa Indexed-PNG mostrata!");
-  } catch (e: any) {
-    console.error(e);
-    addLog("✖ sendMapIndexed error: " + e.message);
-    setStatus("Errore Indexed-PNG");
-  }
+    setStatus("Mappa mostrata!");
+  });
 }
   // ───────── Auto‐update ogni 5s ─────────
   const startAutoUpdate = () => {
