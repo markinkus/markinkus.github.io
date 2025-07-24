@@ -57,6 +57,8 @@ export default function App() {
   const [destInput, setDestInput] = useState({ lat: "", lng: "" });
   const [dest, setDest] = useState<{ lat: number; lng: number } | null>(null);
   const routeLayer = useRef<L.Polyline | null>(null);
+  // aggiungi questo ref
+  const poiLayer = useRef<L.LayerGroup | null>(null);
 
   // mappa Leaflet
   const mapRef = useRef<HTMLDivElement>(null);
@@ -92,55 +94,74 @@ export default function App() {
 
   // ───── Leaflet init & update ─────
   useEffect(() => {
-    if (mapRef.current && !leafletMap.current) {
-      leafletMap.current = L.map(mapRef.current, {
-        center: [40.8362, 16.5936],
-        zoom: 15,
-        zoomControl: false,
-        attributionControl: false,
-      });
-      L.tileLayer(
-        "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
-        { subdomains: "abcd", crossOrigin: true, attribution: "" }
-      ).addTo(leafletMap.current);
-    }
-    if (leafletMap.current && pos) {
-      // -- elimino solo i marker (icone e cerchi) --
-      leafletMap.current.eachLayer((layer) => {
-        if (layer instanceof L.Marker || layer instanceof L.CircleMarker) {
-          leafletMap.current!.removeLayer(layer)
-        }
-      })
+    if (!mapRef.current || leafletMap.current) return;
 
-      // -- ricreo i marker utente e POI --
-      L.circleMarker([pos.lat, pos.lng], {
-        radius: 6,
-        color: "#00ffff",
-        fillColor: "#00ffff",
-        fillOpacity: 0.8,
-      }).addTo(leafletMap.current);
-      poiList.forEach(poi =>
-        L.marker([poi.lat, poi.lng]).addTo(leafletMap.current!)
-      )
+    // crea la mappa
+    leafletMap.current = L.map(mapRef.current, {
+      center: [40.8362, 16.5936],
+      zoom: 15,
+      zoomControl: false,
+      attributionControl: false,
+      preferCanvas: true,
+    });
 
-      // -- se ho una destinazione, calcolo e disegno la rotta --
-      if (dest) {
-        fetch(`${OSRM_URL}/route/v1/driving/${pos.lng},${pos.lat};${dest.lng},${dest.lat}?overview=full&geometries=geojson`)
-          .then(r => r.json())
-          .then(js => {
-            const coords = js.routes[0].geometry.coordinates.map(
-              ([lng, lat]: [number, number]): [number, number] => [lat, lng]
-            );
+    // base layer
+    L.tileLayer(
+      "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
+      { subdomains: "abcd", crossOrigin: true, attribution: "" }
+    ).addTo(leafletMap.current);
 
-            // rimuovo la vecchia rotta, se esiste
-            if (routeLayer.current) leafletMap.current!.removeLayer(routeLayer.current)
-            // ne aggiungo una nuova
-            routeLayer.current = L.polyline(coords, { color: 'red', weight: 4 })
-              .addTo(leafletMap.current!)
-          })
+    // qui creo il layer group *solo* per i POI
+    poiLayer.current = L.layerGroup().addTo(leafletMap.current);
+    poiList.forEach(({ lat, lng, name }) => {
+      L.marker([lat, lng])
+        .bindPopup(name)
+        .addTo(poiLayer.current!);
+    });
+  }, []);
+  useEffect(() => {
+    if (!leafletMap.current || !pos) return;
+
+    // 1) rimuovo solo i marker utente (CircleMarker) e la vecchia rotta (Polyline)
+    leafletMap.current.eachLayer((layer) => {
+      if (layer instanceof L.CircleMarker) {
+        leafletMap.current!.removeLayer(layer);
       }
+    });
+    if (routeLayer.current) {
+      leafletMap.current.removeLayer(routeLayer.current);
+      routeLayer.current = null;
+    }
+
+    // 2) ridisegno il marker utente
+    L.circleMarker([pos.lat, pos.lng], {
+      radius: 6,
+      color: "#00ffff",
+      fillColor: "#00ffff",
+      fillOpacity: 0.8,
+    }).addTo(leafletMap.current);
+
+    // 3) se ho una destinazione, calcolo e disegno la rotta
+    if (dest) {
+      fetch(
+        `${OSRM_URL}/route/v1/driving/` +
+        `${pos.lng},${pos.lat};${dest.lng},${dest.lat}` +
+        `?overview=full&geometries=geojson`
+      )
+        .then((r) => r.json())
+        .then((js) => {
+          const coords = js.routes[0].geometry.coordinates.map(
+            ([lng, lat]: [number, number]) => [lat, lng] as [number, number]
+          );
+          routeLayer.current = L.polyline(coords, {
+            color: "red",
+            weight: 4,
+          }).addTo(leafletMap.current!);
+        })
+        .catch((e) => console.warn("OSRM error", e));
     }
   }, [pos, dest]);
+
 
   // ───────── Connect & start Frame ─────────
   const handleConnect = async () => {
