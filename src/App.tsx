@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import * as UPNG from "upng-js";
 import {
   FrameMsg,
   StdLua,
@@ -224,6 +225,60 @@ export default function App() {
     }
   };
 
+  
+
+const sendMapIndexed = async () => {
+  if (!frame || !mapRef.current) {
+    setStatus("Errore: init mappa o frame");
+    return;
+  }
+  setStatus("📸 Snap Indexed-PNG…");
+  addLog("▶ sendMapIndexed");
+
+  // 1) render HTML → canvas (scale=1 per tenere sotto controllo dimensioni)
+  const canvas = await html2canvas(mapRef.current!, {
+    useCORS: true,
+    allowTaint: false,
+    backgroundColor: "#111827",
+    scale: 1,
+  });
+  const w = canvas.width, h = canvas.height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    setStatus("Errore canvas");
+    return;
+  }
+  const imgData = ctx.getImageData(0, 0, w, h);
+
+  // 2) palette fissa 2-bit (4 colori)
+  const paletteRGBA: number[] = [
+    // R,   G,   B,   A
+      0,   0,   0, 255,   // 0 = nero (sfondo)
+      0, 128,   0, 255,   // 1 = verde (strade)
+    128,   0,   0, 255,   // 2 = rosso  (poi / evidenziazioni)
+      0, 200, 255, 255    // 3 = azzurro(percorso)
+  ];
+
+  // 3) encode Indexed-PNG
+  // imgData.data.buffer è ArrayBufferLike, lo castiamo ad ArrayBuffer
+  const upngBuf = UPNG.encode(
+    [imgData.data.buffer as ArrayBuffer],
+    w,
+    h,
+    2,           // bitDepth
+    paletteRGBA
+  );
+  const indexedPNG = upngBuf as ArrayBuffer;
+
+  // 4) crea lo sprite e invia allo Frame
+  const pngBytes = new Uint8Array(indexedPNG);
+  const sprite = await TxSprite.fromIndexedPngBytes(pngBytes.buffer, /* compress */ true);
+  await frame.sendMessage(0x20, sprite.pack());
+
+  addLog("✔ Indexed-PNG inviata");
+  setStatus("Mappa Indexed-PNG mostrata!");
+};
+
   // ───────── Auto‐update ogni 5s ─────────
   const startAutoUpdate = () => {
     if (autoUpdateRef.current) return;
@@ -393,7 +448,7 @@ export default function App() {
         </button>
         <button onClick={handleClear} disabled={!frame} style={btn(styles.btnSecondary, !frame)}>🧹 Pulisci Schermo</button>
         <div style={{ marginBottom: 8 }}>
-          <button onClick={sendMapToFrame} disabled={!frame}>🗺️ Mostra Mappa</button>
+          <button onClick={sendMapIndexed} disabled={!frame}>🗺️ Mostra Mappa</button>
           <button onClick={startAutoUpdate}>▶ Auto</button>
           <button onClick={stopAutoUpdate}>■ Stop</button>
         </div>
