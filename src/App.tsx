@@ -175,41 +175,85 @@ export default function App() {
     }
   }, [pos, dest]);
 
-
+const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
   // ───────── Connect & start Frame ─────────
-  const handleConnect = async () => {
-    setStatus("Connessione in corso…");
-    addLog("▶ handleConnect");
-    try {
-      const f = new FrameMsg();
-      await f.connect();
-      addLog("✔ connected");
-      f.attachPrintResponseHandler((m) => addLog("[Frame] " + m));
+  // const handleConnect = async () => {
+  //   setStatus("Connessione in corso…");
+  //   addLog("▶ handleConnect");
+  //   try {
+  //     const f = new FrameMsg();
+  //     await f.connect();
+  //     addLog("✔ connected");
+  //     f.attachPrintResponseHandler((m) => addLog("[Frame] " + m));
 
-      // stampo batt/memoria via REPL prima di partire col mio app.lua
-      const battMem = await f.sendLua(
-        'print(frame.battery_level() .. " / " .. collectgarbage("count"))',
-        { awaitPrint: true }
-      );
-      addLog(`⚙️ Batt/Mem: ${battMem}`);
+  //     // stampo batt/memoria via REPL prima di partire col mio app.lua
+  //     const battMem = await f.sendLua(
+  //       'print(frame.battery_level() .. " / " .. collectgarbage("count"))',
+  //       { awaitPrint: true }
+  //     );
+  //     addLog(`⚙️ Batt/Mem: ${battMem}`);
 
-      await f.uploadStdLuaLibs([
-        StdLua.DataMin,
-        StdLua.PlainTextMin,
-        StdLua.CameraMin,
-        StdLua.SpriteMin,
-      ]);
-      addLog("✔ libs loaded");
-      await f.uploadFrameApp(markinoFrameApp);
-      addLog("✔ Lua script uploaded");
-      await f.startFrameApp();
-      setFrame(f);
-      setStatus("Occhiali pronti!");
-    } catch (e: any) {
-      addLog("✖ connect: " + e.message);
-      setStatus("Errore connect: " + e.message);
-    }
-  };
+  //     await f.uploadStdLuaLibs([
+  //       StdLua.DataMin,
+  //       StdLua.PlainTextMin,
+  //       StdLua.CameraMin,
+  //       StdLua.SpriteMin,
+  //     ]);
+  //     addLog("✔ libs loaded");
+  //     await f.uploadFrameApp(markinoFrameApp);
+  //     addLog("✔ Lua script uploaded");
+  //     await f.startFrameApp();
+  //     setFrame(f);
+  //     setStatus("Occhiali pronti!");
+  //   } catch (e: any) {
+  //     addLog("✖ connect: " + e.message);
+  //     setStatus("Errore connect: " + e.message);
+  //   }
+  // };
+
+const handleConnect = async () => {
+  setStatus("Connessione in corso…");
+  addLog("▶ handleConnect");
+
+  try {
+    const f = new FrameMsg();
+    await f.connect();
+    addLog("✔ connected");
+    f.attachPrintResponseHandler((m) => addLog("[Frame] " + m));
+
+    // 1) upload solo PlainTextMin per gestire i messaggi 0x0a
+    await f.uploadStdLuaLibs([StdLua.PlainTextMin]);
+    addLog("✔ PlainTextMin loaded");
+
+    // 2) splash custom
+    await f.sendMessage(
+      0x0a,
+      new TxPlainText("BullVerge - Frame Connection", 1, 1, /*paletteOffset=*/1).pack()
+    );
+    await sleep(2000);
+    // 3) pulisci
+    await f.sendMessage(0x0a, new TxPlainText("", 1, 1, 1).pack());
+
+    // 4) ora uploada tutte le altre
+    await f.uploadStdLuaLibs([
+      StdLua.DataMin,
+      StdLua.CameraMin,
+      StdLua.SpriteMin,
+    ]);
+    addLog("✔ restante libs loaded");
+
+    await f.uploadFrameApp(markinoFrameApp);
+    addLog("✔ Lua script uploaded");
+
+    await f.startFrameApp();
+    setFrame(f);
+    setStatus("Occhiali pronti!");
+  } catch (e: any) {
+    addLog("✖ connect: " + e.message);
+    setStatus("Errore connect: " + e.message);
+  }
+};
+
 
   // ───────── Snapshot Mappa ─────────
   const sendMapToFrame = async () => {
@@ -404,7 +448,7 @@ export default function App() {
 
     // componi il multilinea
     const dash = [
-      `Mobile BullVerge → Frame`,
+      `Mark - BullVerge: `,
       `${dateStr},`,
       `${timeStr},`,
       `${weatherStr},`,
