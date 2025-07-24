@@ -239,7 +239,7 @@ const sendMapIndexed = async () => {
     const canvas = await html2canvas(mapRef.current, {
       useCORS: true,
       backgroundColor: "#111827",
-      scale: 2,
+      scale: 1,
     });
     const w = canvas.width, h = canvas.height;
     const ctx = canvas.getContext("2d")!;
