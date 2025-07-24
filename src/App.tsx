@@ -425,11 +425,8 @@ export default function App() {
     text: dash
   });
 
-  // invia prima header poi tutte le slice
+  // oppure: invia tutto in un colpo
   await frame.sendMessage(0x20, tsb.pack());
-  for (const slice of tsb.sprites) {
-    await frame.sendMessage(0x20, slice.pack());
-  }
 
 
     setStatus("Dashboard inviata");
