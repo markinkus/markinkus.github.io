@@ -106,10 +106,20 @@ export default function App() {
     });
 
     // base layer
+    // L.tileLayer(
+    //   "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
+    //   { subdomains: "abcd", crossOrigin: true, attribution: "" }
+    // ).addTo(leafletMap.current);
+
     L.tileLayer(
-      "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
-      { subdomains: "abcd", crossOrigin: true, attribution: "" }
-    ).addTo(leafletMap.current);
+      "https://stamen-tiles-{s}.a.ssl.fastly.net/toner/{z}/{x}/{y}.png",
+      {
+        subdomains: "abcd",
+        crossOrigin: true,
+        attribution: 'Map tiles by Stamen Design'
+      }
+    ).addTo(leafletMap.current!);
+
 
     // qui creo il layer group *solo* per i POI
     poiLayer.current = L.layerGroup().addTo(leafletMap.current);
@@ -135,11 +145,13 @@ export default function App() {
 
     // 2) ridisegno il marker utente
     L.circleMarker([pos.lat, pos.lng], {
-      radius: 6,
-      color: "#00ffff",
-      fillColor: "#00ffff",
-      fillOpacity: 0.8,
-    }).addTo(leafletMap.current);
+      radius: 12,         // grandezza
+      weight: 3,          // spessore bordo
+      color: "#C80000",   // bordo rosso
+      fillColor: "#FFD600", // centro giallo
+      fillOpacity: 1      // pienamente opaco
+    }).addTo(leafletMap.current!);
+
 
     // 3) se ho una destinazione, calcolo e disegno la rotta
     if (dest) {
@@ -155,7 +167,7 @@ export default function App() {
           );
           routeLayer.current = L.polyline(coords, {
             color: "#00C8FF",
-            weight: 8,
+            weight: 10,
           }).addTo(leafletMap.current!);
         })
         .catch((e) => console.warn("OSRM error", e));
@@ -172,6 +184,14 @@ export default function App() {
       await f.connect();
       addLog("✔ connected");
       f.attachPrintResponseHandler((m) => addLog("[Frame] " + m));
+
+      // stampo batt/memoria via REPL prima di partire col mio app.lua
+      const battMem = await f.sendLua(
+        'print(frame.battery_level() .. " / " .. collectgarbage("count"))',
+        { awaitPrint: true }
+      );
+      addLog(`⚙️ Batt/Mem: ${battMem}`);
+
       await f.uploadStdLuaLibs([
         StdLua.DataMin,
         StdLua.PlainTextMin,
@@ -347,36 +367,92 @@ export default function App() {
     }
   };
   // pulsante Dashboard: clear + ora, batt/mem + meteo
+  // const handleDashboard = async () => {
+  //   if (!frame) return setStatus("Connetti prima");
+  //   addLog("▶ showDashboard");
+  //   // pulisci schermo
+  //   await frame.sendMessage(0x0a, new TxPlainText("").pack());
+  //   // ora
+  //   const now = new Date();
+  //   const timeStr = now.toLocaleTimeString();
+  //   // meteo
+  //   let weatherStr = "meteo sconosciuto";
+  //   if (pos) {
+  //     try {
+  //       const wres = await fetch(
+  //         `https://api.open-meteo.com/v1/forecast?latitude=${pos.lat}&longitude=${pos.lng}&current_weather=true`
+  //       );
+  //       const wj = await wres.json();
+  //       const cw = wj.current_weather;
+  //       weatherStr = `${cw.temperature}°C, vento ${cw.windspeed} km/h`;
+  //     } catch { }
+  //   }
+  //   // componi testo
+  //   const dash = `Ora: ${timeStr}\n Meteo: ${weatherStr}\n Coordinate: ${pos ? `${pos.lat.toFixed(5)}, ${pos.lng.toFixed(5)}` : "Non Conosciute"}`;
+  //   await frame.sendMessage(0x0a, new TxPlainText(dash).pack());
+  //   setStatus("Dashboard inviata");
+  // };
+  const WHITE = 1;
+  const PURPLE = 8;
+
   const handleDashboard = async () => {
     if (!frame) return setStatus("Connetti prima");
     addLog("▶ showDashboard");
-    // pulisci schermo
-    await frame.sendMessage(0x0a, new TxPlainText("").pack());
-    // ora
+
+    // 1) pulisci
+    await frame.sendMessage(0x0a, new TxPlainText("", 1, 1, WHITE).pack());
+
+    // 2) dati base
     const now = new Date();
-    const timeStr = now.toLocaleTimeString();
-    // batteria/memoria
-    // const battMem = await frame.sendLua(
-    //   'print(frame.battery_level() .. " / " .. collectgarbage("count"))',
-    //   { awaitPrint: true }
-    // );
-    // meteo
-    let weatherStr = "meteo sconosciuto";
+    const dateStr = now.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+    const timeStr = now.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+
+    // 3) meteo
+    let weatherStr = "n/d";
     if (pos) {
       try {
         const wres = await fetch(
           `https://api.open-meteo.com/v1/forecast?latitude=${pos.lat}&longitude=${pos.lng}&current_weather=true`
         );
-        const wj = await wres.json();
-        const cw = wj.current_weather;
+        const { current_weather: cw } = await wres.json();
         weatherStr = `${cw.temperature}°C, vento ${cw.windspeed} km/h`;
       } catch { }
     }
-    // componi testo
-    const dash = `Ora: ${timeStr}\n Meteo: ${weatherStr}\n Coordinate: ${pos ? `${pos.lat.toFixed(5)}, ${pos.lng.toFixed(5)}` : "n/a"}`;
-    await frame.sendMessage(0x0a, new TxPlainText(dash).pack());
+
+    // 4) bussola & distanza
+    const headingDeg = Math.round(heading);
+    let distStr = "";
+    if (dest && pos) {
+      const R = 6371e3;
+      const φ1 = pos.lat * Math.PI / 180, φ2 = dest.lat * Math.PI / 180;
+      const Δφ = (dest.lat - pos.lat) * Math.PI / 180;
+      const Δλ = (dest.lng - pos.lng) * Math.PI / 180;
+      const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
+        Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
+      const d = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      distStr = `Dist: ${(d / 1000).toFixed(1)} km`;
+    }
+
+    // 5) invia riga per riga con posizioni e colori
+    const lines = [
+      { text: `📅 ${dateStr}`, color: WHITE, y: 1 },
+      { text: `⏰ ${timeStr}`, color: WHITE, y: 20 },
+      { text: `🌡 ${weatherStr}`, color: PURPLE, y: 40 },
+      { text: `🧭 ${headingDeg}°`, color: PURPLE, y: 60 },
+      { text: distStr, color: WHITE, y: 80 },
+    ];
+
+    for (const { text, color, y } of lines) {
+      // x=1, y= [20px per riga], paletteOffset=color
+      await frame.sendMessage(
+        0x0a,
+        new TxPlainText(text, 1, y, color).pack()
+      );
+    }
+
     setStatus("Dashboard inviata");
   };
+
 
   const btn = (st: any, dis = false) => ({ ...st, ...(dis ? styles.btnDisabled : {}) });
 
