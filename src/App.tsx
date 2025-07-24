@@ -112,13 +112,14 @@ export default function App() {
     // ).addTo(leafletMap.current);
 
     L.tileLayer(
-      "https://stamen-tiles-{s}.a.ssl.fastly.net/toner/{z}/{x}/{y}.png",
+      "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
       {
         subdomains: "abcd",
         crossOrigin: true,
-        attribution: 'Map tiles by Stamen Design'
+        attribution: ""
       }
     ).addTo(leafletMap.current!);
+
 
 
     // qui creo il layer group *solo* per i POI
@@ -392,66 +393,56 @@ export default function App() {
   //   await frame.sendMessage(0x0a, new TxPlainText(dash).pack());
   //   setStatus("Dashboard inviata");
   // };
-  const WHITE = 1;
-  const PURPLE = 8;
-
   const handleDashboard = async () => {
     if (!frame) return setStatus("Connetti prima");
     addLog("▶ showDashboard");
 
-    // 1) pulisci
-    await frame.sendMessage(0x0a, new TxPlainText("", 1, 1, WHITE).pack());
-
-    // 2) dati base
+    // prepara i dati
     const now = new Date();
-    const dateStr = now.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
-    const timeStr = now.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+    const dateStr = now.toLocaleDateString(undefined, { weekday: 'short', day: '2-digit', month: 'short' });
+    const timeStr = now.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 
-    // 3) meteo
     let weatherStr = "n/d";
     if (pos) {
       try {
-        const wres = await fetch(
+        const res = await fetch(
           `https://api.open-meteo.com/v1/forecast?latitude=${pos.lat}&longitude=${pos.lng}&current_weather=true`
         );
-        const { current_weather: cw } = await wres.json();
+        const { current_weather: cw } = await res.json();
         weatherStr = `${cw.temperature}°C, vento ${cw.windspeed} km/h`;
       } catch { }
     }
 
-    // 4) bussola & distanza
-    const headingDeg = Math.round(heading);
-    let distStr = "";
+    // calcola la distanza in km (se hai già `dest`)
+    let distStr = "–";
     if (dest && pos) {
       const R = 6371e3;
       const φ1 = pos.lat * Math.PI / 180, φ2 = dest.lat * Math.PI / 180;
       const Δφ = (dest.lat - pos.lat) * Math.PI / 180;
       const Δλ = (dest.lng - pos.lng) * Math.PI / 180;
-      const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
-        Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
+      const a = Math.sin(Δφ / 2) ** 2 + Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) ** 2;
       const d = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-      distStr = `Dist: ${(d / 1000).toFixed(1)} km`;
+      distStr = `${(d / 1000).toFixed(1)} km`;
     }
 
-    // 5) invia riga per riga con posizioni e colori
-    const lines = [
-      { text: `📅 ${dateStr}`, color: WHITE, y: 1 },
-      { text: `⏰ ${timeStr}`, color: WHITE, y: 20 },
-      { text: `🌡 ${weatherStr}`, color: PURPLE, y: 40 },
-      { text: `🧭 ${headingDeg}°`, color: PURPLE, y: 60 },
-      { text: distStr, color: WHITE, y: 80 },
-    ];
+    // componi il multilinea
+    const dash = [
+      `📅 ${dateStr}`,
+      `⏰ ${timeStr}`,
+      `🌡 ${weatherStr}`,
+      `🚩 ${distStr}`,
+      `🧭 ${Math.round(heading)}°`
+    ].join("\n");
 
-    for (const { text, color, y } of lines) {
-      // x=1, y= [20px per riga], paletteOffset=color
-      await frame.sendMessage(
-        0x0a,
-        new TxPlainText(text, 1, y, color).pack()
-      );
-    }
+    // invia TUTTO in un solo TxPlainText, paletteOffset=1 (bianco)
+    await frame.sendMessage(
+      0x0a,
+      new TxPlainText(dash, /* x= */1, /* y= */1, /* paletteOffset= */1).pack()
+    );
 
     setStatus("Dashboard inviata");
   };
+
 
 
   const btn = (st: any, dis = false) => ({ ...st, ...(dis ? styles.btnDisabled : {}) });
