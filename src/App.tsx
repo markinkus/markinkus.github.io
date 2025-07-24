@@ -155,8 +155,8 @@ export default function App() {
             ([lng, lat]: [number, number]) => [lat, lng] as [number, number]
           );
           routeLayer.current = L.polyline(coords, {
-            color: "red",
-            weight: 4,
+            color: "#00C8FF",
+            weight: 5,
           }).addTo(leafletMap.current!);
         })
         .catch((e) => console.warn("OSRM error", e));
@@ -225,57 +225,69 @@ export default function App() {
     }
   };
 
-  
+ 
+// 2) sostituisci il tuo sendMapIndexed con questa:
+
 async function sendMapIndexed() {
-  if (!frame || !mapRef.current) {
-    setStatus("Init mappa o frame");
+  if (!frame || !leafletMap.current || !mapRef.current) {
+    setStatus("Errore: init mappa o frame");
     return;
   }
   setStatus("📸 Snap Indexed-PNG…");
-  addLog("▶ sendMapIndexed");
+  addLog("▶ sendMapIndexed start");
 
-  try {
-    // 1) render HTML → canvas
-    const canvas = await html2canvas(mapRef.current, {
-      useCORS: true,
-      backgroundColor: "#111827",
-      scale: 1, // abbassa se serve meno risoluzione
-    });
-    const w = canvas.width;
-    const h = canvas.height;
-    const ctx = canvas.getContext("2d")!;
-    const imgData = ctx.getImageData(0, 0, w, h);
+  // forza redraw e aspetta un attimo che leaflet termini il painting
+  leafletMap.current.invalidateSize();
+  await new Promise((r) => setTimeout(r, 500));
+  addLog("▶ map.invalidateSize + delay");
 
-    // 2) palette fissa 2-bit (4 colori) come number[]
-    const paletteRGBA: number[] = [
-      0,   0,   0, 255,   // 0 = nero (sfondo)
-      0, 128,   0, 255,   // 1 = verde (strade)
-      128,   0,   0, 255, // 2 = rosso  (POI/evidenze)
-      0, 200, 255, 255    // 3 = azzurro(percorso)
-    ];
+  // cattura canvas di tutto il div
+  const canvas = await html2canvas(mapRef.current, {
+    useCORS: true,
+    backgroundColor: "#111827",
+    scale: 1, 
+  });
+  const w = canvas.width, h = canvas.height;
+  const ctx = canvas.getContext("2d")!;
+  const img = ctx.getImageData(0, 0, w, h);
+  addLog(`▶ got ImageData ${w}×${h}`);
 
-    // 3) encode PNG indicizzato 2-bit
-    const upngBuf = UPNG.encode(
-      [ imgData.data.buffer as ArrayBuffer ],
-      w, h,
-      2,            // bitDepth
-      paletteRGBA  // palette
-    ) as ArrayBuffer;
-    const pngArr = new Uint8Array(upngBuf);
+  // 4 colori RGBA (2-bit)
+  const palette = new Uint8Array([
+    0,   0,   0, 255,   // 0 = nero (sfondo)
+    0, 128,   0, 255,   // 1 = verde (strade + POI)
+    128,   0,   0, 255, // 2 = rosso  (altre evidenze, se serve)
+    0, 200, 255, 255    // 3 = azzurro (percorso)
+  ]);
 
-    // 4) crea sprite con palette esatta (passa pngArr.buffer, non pngArr)
-    const sprite = await TxSprite.fromIndexedPngBytes(
-      pngArr.buffer, true
-    );
-    await frame.sendMessage(0x20, sprite.pack());
-
-    addLog("✔ Indexed-PNG inviata");
-    setStatus("Mappa Indexed-PNG mostrata!");
-  } catch (e: any) {
-    console.error(e);
-    addLog("✖ sendMapIndexed error: " + e.message);
-    setStatus("Errore Indexed-PNG");
+  // quantizza pixel-by-pixel sul palette index 0–3
+  const pixelData = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) {
+    const r = img.data[i*4], g = img.data[i*4+1], b = img.data[i*4+2];
+    let bestI = 0, bestD = Infinity;
+    for (let c = 0; c < 4; c++) {
+      const pr = palette[c*4], pg = palette[c*4+1], pb = palette[c*4+2];
+      const dr = r - pr, dg = g - pg, db = b - pb;
+      const d2 = dr*dr + dg*dg + db*db;
+      if (d2 < bestD) { bestD = d2; bestI = c; }
+    }
+    pixelData[i] = bestI;
   }
+  addLog("▶ quantizzazione completata");
+
+  // costruisci e invia lo sprite (con LZ4)
+  const sprite = new TxSprite(
+    w, h,      // width, height
+    4,         // numColors
+    palette,   // paletteData
+    pixelData, // pixelData
+    true       // compress
+  );
+  addLog("▶ TxSprite creato, invio…");
+
+  await frame.sendMessage(0x20, sprite.pack());
+  addLog("✔ Indexed-PNG inviata");
+  setStatus("Mappa mostrata!");
 }
   // ───────── Auto‐update ogni 5s ─────────
   const startAutoUpdate = () => {
