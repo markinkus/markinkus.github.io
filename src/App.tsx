@@ -425,9 +425,23 @@ export default function App() {
     text: dash
   });
 
-  // oppure: invia tutto in un colpo
-  await frame.sendMessage(0x20, tsb.pack());
+  // 1) prepara tutti i buffer: header + slices
+  const buffers: Uint8Array[] = [
+    tsb.pack(), // header
+    ...tsb.sprites.map((s) => s.pack()), // tutte le slice
+  ];
 
+  // 2) calcola lunghezza totale e crea unico Uint8Array
+  const totalLen = buffers.reduce((sum, b) => sum + b.length, 0);
+  const merged = new Uint8Array(totalLen);
+  let offset = 0;
+  for (const buf of buffers) {
+    merged.set(buf, offset);
+    offset += buf.length;
+  }
+
+  // 3) invia in un colpo solo
+  await frame.sendData(merged);
 
     setStatus("Dashboard inviata");
   };
