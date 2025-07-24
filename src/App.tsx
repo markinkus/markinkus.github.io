@@ -4,6 +4,7 @@ import {
   StdLua,
   TxPlainText,
   TxCaptureSettings,
+  TxTextSpriteBlock,
   TxSprite,
   RxPhoto,
 } from "frame-msg";
@@ -417,12 +418,19 @@ export default function App() {
       `${weatherStr},`,
       `${distStr}`
     ].join("\n");
+  const tsb = new TxTextSpriteBlock({
+    width: 600,
+    fontSize: 30,
+    maxDisplayRows: 5,
+    text: dash
+  });
 
-    // invia TUTTO in un solo TxPlainText, paletteOffset=1 (bianco)
-    await frame.sendMessage(
-      0x0a,
-      new TxPlainText(dash, /* x= */1, /* y= */1, /* paletteOffset= */1).pack()
-    );
+  // invia prima header poi tutte le slice
+  await frame.sendMessage(0x20, tsb.pack());
+  for (const slice of tsb.sprites) {
+    await frame.sendMessage(0x20, slice.pack());
+  }
+
 
     setStatus("Dashboard inviata");
   };
