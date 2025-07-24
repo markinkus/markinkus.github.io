@@ -367,32 +367,7 @@ export default function App() {
       setStatus("Errore disconnect: " + e.message);
     }
   };
-  // pulsante Dashboard: clear + ora, batt/mem + meteo
-  // const handleDashboard = async () => {
-  //   if (!frame) return setStatus("Connetti prima");
-  //   addLog("▶ showDashboard");
-  //   // pulisci schermo
-  //   await frame.sendMessage(0x0a, new TxPlainText("").pack());
-  //   // ora
-  //   const now = new Date();
-  //   const timeStr = now.toLocaleTimeString();
-  //   // meteo
-  //   let weatherStr = "meteo sconosciuto";
-  //   if (pos) {
-  //     try {
-  //       const wres = await fetch(
-  //         `https://api.open-meteo.com/v1/forecast?latitude=${pos.lat}&longitude=${pos.lng}&current_weather=true`
-  //       );
-  //       const wj = await wres.json();
-  //       const cw = wj.current_weather;
-  //       weatherStr = `${cw.temperature}°C, vento ${cw.windspeed} km/h`;
-  //     } catch { }
-  //   }
-  //   // componi testo
-  //   const dash = `Ora: ${timeStr}\n Meteo: ${weatherStr}\n Coordinate: ${pos ? `${pos.lat.toFixed(5)}, ${pos.lng.toFixed(5)}` : "Non Conosciute"}`;
-  //   await frame.sendMessage(0x0a, new TxPlainText(dash).pack());
-  //   setStatus("Dashboard inviata");
-  // };
+
   const handleDashboard = async () => {
     if (!frame) return setStatus("Connetti prima");
     addLog("▶ showDashboard");
@@ -404,12 +379,14 @@ export default function App() {
 
     let weatherStr = "n/d";
     if (pos) {
+      const coordinates = `${pos.lat.toFixed(5)}, ${pos.lng.toFixed(5)}`;
+      weatherStr = `Coord: ${coordinates},\n`;
       try {
         const res = await fetch(
           `https://api.open-meteo.com/v1/forecast?latitude=${pos.lat}&longitude=${pos.lng}&current_weather=true`
         );
         const { current_weather: cw } = await res.json();
-        weatherStr = `${cw.temperature}°C, vento ${cw.windspeed} km/h`;
+        weatherStr += `${cw.temperature}°C, vento ${cw.windspeed} km/h`;
       } catch { }
     }
 
@@ -427,11 +404,11 @@ export default function App() {
 
     // componi il multilinea
     const dash = [
-      `📅 ${dateStr}`,
-      `⏰ ${timeStr}`,
-      `🌡 ${weatherStr}`,
-      `🚩 ${distStr}`,
-      `🧭 ${Math.round(heading)}°`
+      `Mobile BullVerge → Frame`,
+      `${dateStr},`,
+      `${timeStr},`,
+      `${weatherStr},`,
+      `${distStr}`
     ].join("\n");
 
     // invia TUTTO in un solo TxPlainText, paletteOffset=1 (bianco)
