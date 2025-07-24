@@ -356,10 +356,10 @@ export default function App() {
     const now = new Date();
     const timeStr = now.toLocaleTimeString();
     // batteria/memoria
-    const battMem = await frame.sendLua(
-      'print(frame.battery_level() .. " / " .. collectgarbage("count"))',
-      { awaitPrint: true }
-    );
+    // const battMem = await frame.sendLua(
+    //   'print(frame.battery_level() .. " / " .. collectgarbage("count"))',
+    //   { awaitPrint: true }
+    // );
     // meteo
     let weatherStr = "meteo sconosciuto";
     if (pos) {
@@ -373,7 +373,7 @@ export default function App() {
       } catch { }
     }
     // componi testo
-    const dash = `Ora: ${timeStr}\n Batt/Mem: ${battMem}\n Meteo: ${weatherStr}`;
+    const dash = `Ora: ${timeStr}\n Meteo: ${weatherStr}\n Coordinate: ${pos ? `${pos.lat.toFixed(5)}, ${pos.lng.toFixed(5)}` : "n/a"}`;
     await frame.sendMessage(0x0a, new TxPlainText(dash).pack());
     setStatus("Dashboard inviata");
   };
