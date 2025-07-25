@@ -4,12 +4,10 @@ import {
   StdLua,
   TxPlainText,
   TxCaptureSettings,
-  TxTextSpriteBlock,
   TxSprite,
   RxPhoto,
 } from "frame-msg";
-// import markinoFrameApp from "../lua/markino_frame_app.lua?raw";
-import markinoFrameApp from "../lua/frame_optimized.lua?raw";
+import markinoFrameApp from "../lua/markino_frame_app.lua?raw";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import html2canvas from "html2canvas";
@@ -200,8 +198,6 @@ export default function App() {
         StdLua.PlainTextMin,
         StdLua.CameraMin,
         StdLua.SpriteMin,
-        StdLua.TextSpriteBlockMin,
-        StdLua.ImageSpriteBlockMin,
       ]);
       addLog("✔ libs loaded");
       await f.uploadFrameApp(markinoFrameApp);
@@ -211,7 +207,7 @@ export default function App() {
       setStatus("Occhiali pronti!");
       await f.sendMessage(
         0x0a,
-        new TxPlainText("BullVerge - Frame Connection", 1, 1, /*paletteOffset=*/1).pack()
+        new TxPlainText("BullVerge-Frame Connect", 1, 1, /*paletteOffset=*/1).pack()
       );
       await sleep(2000);
       await f.sendMessage(0x0a, new TxPlainText("", 1, 1, 1).pack());
@@ -416,26 +412,17 @@ export default function App() {
     // componi il multilinea
     const dash = [
       `Mark - BullVerge: `,
-      `${dateStr},`,
-      `${timeStr},`,
-      `${weatherStr},`,
+      `${dateStr}|`,
+      `${timeStr}|`,
+      `${weatherStr}|`,
       `${distStr}`
     ].join("\n");
-  const tsb = new TxTextSpriteBlock({
-    width: 500,
-    fontSize: 28,
-    maxDisplayRows: 5,
-    text: dash
-  });
 
-  // invia prima header poi tutte le slice
-  await frame.sendMessage(0x22, tsb.pack());
-  
-  for (const slice of tsb.sprites) {
-    await frame.sendMessage(0x22, slice.pack());
-  }
-  
-
+    // invia TUTTO in un solo TxPlainText, paletteOffset=1 (bianco)
+    await frame.sendMessage(
+      0x0a,
+      new TxPlainText(dash, /* x= */1, /* y= */1, /* paletteOffset= */1).pack()
+    );
 
     setStatus("Dashboard inviata");
   };
