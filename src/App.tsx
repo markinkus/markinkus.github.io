@@ -422,17 +422,17 @@ export default function App() {
       `${distStr}`
     ].join("\n");
   const tsb = new TxTextSpriteBlock({
-    width: 600,
-    fontSize: 30,
+    width: 500,
+    fontSize: 28,
     maxDisplayRows: 5,
     text: dash
   });
 
   // invia prima header poi tutte le slice
-  await frame.sendMessage(0x20, tsb.pack());
+  await frame.sendMessage(0x22, tsb.pack());
   
   for (const slice of tsb.sprites) {
-    await frame.sendMessage(0x20, slice.pack());
+    await frame.sendMessage(0x22, slice.pack());
   }
   
 
