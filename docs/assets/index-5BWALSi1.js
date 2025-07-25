@@ -431,6 +431,7 @@ while true do
         local tsb = data.app_data[TEXT_SPRITE_BLOCK]
         local active = tsb.active_sprites or #tsb.sprites
         local total  = tsb.total_sprites  or (tsb.offsets and #tsb.offsets) or 0
+        if tsb.first_sprite_index > 0 and active == total then
           clear_display()
           render_text_block(tsb)
           data.app_data[TEXT_SPRITE_BLOCK] = nil
