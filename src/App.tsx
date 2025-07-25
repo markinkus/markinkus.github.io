@@ -200,6 +200,8 @@ export default function App() {
         StdLua.PlainTextMin,
         StdLua.CameraMin,
         StdLua.SpriteMin,
+        StdLua.TextSpriteBlockMin,
+        StdLua.ImageSpriteBlockMin,
       ]);
       addLog("✔ libs loaded");
       await f.uploadFrameApp(markinoFrameApp);
