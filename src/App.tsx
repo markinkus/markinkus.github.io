@@ -4,10 +4,12 @@ import {
   StdLua,
   TxPlainText,
   TxCaptureSettings,
+  TxTextSpriteBlock,
   TxSprite,
   RxPhoto,
 } from "frame-msg";
 import markinoFrameApp from "../lua/markino_frame_app.lua?raw";
+import markinoFrameAppOPT from "../lua/frame_optimized.lua?raw";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import html2canvas from "html2canvas";
@@ -44,6 +46,7 @@ async function fetchGemini(prompt: string, base64Image?: string): Promise<string
 export default function App() {
   // ───────── UI state ─────────
   const [frame, setFrame] = useState<FrameMsg | null>(null);
+  const [frameOPT, setFrameOPT] = useState<FrameMsg | null>(null);
   const [prompt, setPrompt] = useState("");
   const [response, setResponse] = useState("");
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
@@ -207,7 +210,7 @@ export default function App() {
       setStatus("Occhiali pronti!");
       await f.sendMessage(
         0x0a,
-        new TxPlainText("BullVerge-Frame Connect", 1, 1, /*paletteOffset=*/1).pack()
+        new TxPlainText("BullVerge-Frame Connect", 1, 1, /*paletteOffset=*/9).pack()
       );
       await sleep(2000);
       await f.sendMessage(0x0a, new TxPlainText("", 1, 1, 1).pack());
@@ -217,7 +220,48 @@ export default function App() {
       setStatus("Errore connect: " + e.message);
     }
   };
+  const handleConnectOPT = async () => {
+    setStatus("Connessione in corso…");
+    addLog("▶ handleConnect");
+    try {
+      const f = new FrameMsg();
+      await f.connect();
+      addLog("✔ connected");
+      f.attachPrintResponseHandler((m) => addLog("[Frame] " + m));
 
+      // stampo batt/memoria via REPL prima di partire col mio app.lua
+      const battMem = await f.sendLua(
+        'print(frame.battery_level() .. " / " .. collectgarbage("count"))',
+        { awaitPrint: true }
+      );
+      addLog(`⚙️ Batt/Mem: ${battMem}`);
+
+      await f.uploadStdLuaLibs([
+        StdLua.DataMin,
+        StdLua.PlainTextMin,
+        StdLua.CameraMin,
+        StdLua.SpriteMin,
+        StdLua.TextSpriteBlockMin,
+        StdLua.ImageSpriteBlockMin,
+      ]);
+      addLog("✔ libs loaded");
+      await f.uploadFrameApp(markinoFrameAppOPT);
+      addLog("✔ Lua script uploaded");
+      await f.startFrameApp();
+      setFrameOPT(f);
+      setStatus("Occhiali pronti!");
+      await f.sendMessage(
+        0x0a,
+        new TxPlainText("BullVerge-Frame OPT", 1, 1, /*paletteOffset=*/7).pack()
+      );
+      await sleep(2000);
+      await f.sendMessage(0x0a, new TxPlainText("", 1, 1, 1).pack());
+
+    } catch (e: any) {
+      addLog("✖ connect: " + e.message);
+      setStatus("Errore connect: " + e.message);
+    }
+  };
   // ───────── Snapshot Mappa ─────────
   const sendMapToFrame = async () => {
     if (!frame || !mapRef.current) {
@@ -409,25 +453,84 @@ export default function App() {
       distStr = `${(d / 1000).toFixed(1)} km`;
     }
 
-    // componi il multilinea
+    // componi la dashboard
+    // const dash = [
+    //   `Mark - BullVerge: `,
+    //   `${dateStr}|`,
+    //   `${timeStr}|`,
+    //   `${weatherStr}|`,
+    //   `${distStr}`
+    // ].join("\n");
+
     const dash = [
-      `Mark - BullVerge: `,
-      `${dateStr}|`,
-      `${timeStr}|`,
-      `${weatherStr}|`,
-      `${distStr}`
+      `Mark-BullVerge: ${dateStr}, ${timeStr}, ${weatherStr}, ${distStr}`
     ].join("\n");
 
     // invia TUTTO in un solo TxPlainText, paletteOffset=1 (bianco)
     await frame.sendMessage(
       0x0a,
-      new TxPlainText(dash, /* x= */1, /* y= */1, /* paletteOffset= */1).pack()
+      new TxPlainText(dash, /* x= */1, /* y= */1, /* paletteOffset= */3).pack()
     );
-
     setStatus("Dashboard inviata");
   };
 
+  const handleDashboardOPT = async () => {
+    if (!frame) return setStatus("Connetti prima");
+    addLog("▶ showDashboard");
 
+    // prepara i dati
+    const now = new Date();
+    const dateStr = now.toLocaleDateString(undefined, { weekday: 'short', day: '2-digit', month: 'short' });
+    const timeStr = now.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+
+    let weatherStr = "n/d";
+    if (pos) {
+      const coordinates = `${pos.lat.toFixed(5)}, ${pos.lng.toFixed(5)}`;
+      weatherStr = `Coord: ${coordinates},\n`;
+      try {
+        const res = await fetch(
+          `https://api.open-meteo.com/v1/forecast?latitude=${pos.lat}&longitude=${pos.lng}&current_weather=true`
+        );
+        const { current_weather: cw } = await res.json();
+        weatherStr += `${cw.temperature}°C, vento ${cw.windspeed} km/h`;
+      } catch { }
+    }
+
+    // calcola la distanza in km (se hai già `dest`)
+    let distStr = "–";
+    if (dest && pos) {
+      const R = 6371e3;
+      const φ1 = pos.lat * Math.PI / 180, φ2 = dest.lat * Math.PI / 180;
+      const Δφ = (dest.lat - pos.lat) * Math.PI / 180;
+      const Δλ = (dest.lng - pos.lng) * Math.PI / 180;
+      const a = Math.sin(Δφ / 2) ** 2 + Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) ** 2;
+      const d = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      distStr = `${(d / 1000).toFixed(1)} km`;
+    }
+
+    // componi il multilinea
+    const dash = [
+      `Mark - BullVerge: `,
+      `${dateStr},`,
+      `${timeStr},`,
+      `${weatherStr},`,
+      `${distStr}`
+    ].join("\n");
+    const tsb = new TxTextSpriteBlock({
+      width: 500,
+      fontSize: 28,
+      maxDisplayRows: 5,
+      text: dash
+    });
+
+    // invia prima header poi tutte le slice
+    await frame.sendMessage(0x22, tsb.pack());
+
+    for (const slice of tsb.sprites) {
+      await frame.sendMessage(0x22, slice.pack());
+    }
+    setStatus("Dashboard inviata");
+  };
 
   const btn = (st: any, dis = false) => ({ ...st, ...(dis ? styles.btnDisabled : {}) });
 
@@ -437,7 +540,9 @@ export default function App() {
 
       <div style={styles.controls}>
         <button onClick={handleConnect} style={btn(styles.btnSecondary, !!frame)}>🔌Connetti & Carica</button>
+        <button onClick={handleConnectOPT} style={btn(styles.btnSecondary, !!frameOPT)}>🔌Connetti & Carica OPT</button>
         <button onClick={handleDashboard} disabled={!frame} style={btn(styles.btnSecondary, !frame)}>📊 Dashboard</button>
+        <button onClick={handleDashboardOPT} disabled={!frameOPT} style={btn(styles.btnSecondary, !frameOPT)}>📊 Dashboard OPT</button>
         <button onClick={handleCapture} disabled={!frame} style={btn(styles.btnPrimary, !frame)}>📸 Cattura Foto</button>
         <button onClick={() => setShowMedia((v) => !v)} disabled={!photoUrl} style={btn(styles.btnSecondary, !photoUrl)}>
           {showMedia ? "Nascondi Media" : "Mostra Media"}
@@ -470,6 +575,7 @@ export default function App() {
         </div>
 
         <button onClick={handleDisconnect} disabled={!frame} style={btn(styles.btnSecondary, !frame)}>🔌Disconnetti</button>
+        <button onClick={handleDisconnect} disabled={!frameOPT} style={btn(styles.btnSecondary, !frameOPT)}>🔌Disconnetti OPT</button>
         <button onClick={handleGenerateImage} disabled={!frame || !prompt} style={btn(styles.btnPrimary, !frame || !prompt)}>🎨 Genera Immagine</button>
       </div>
 
