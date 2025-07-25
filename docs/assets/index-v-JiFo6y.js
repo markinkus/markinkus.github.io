@@ -393,7 +393,7 @@ local function render_text_block(tsb)
     local y   = (idx - 1) * spr.height
     frame.display.bitmap(1, y + 1, spr.width, 2 ^ spr.bpp, 0, spr.pixel_data)
   end
-  frame.display.show()
+  -- frame.display.show()
 end
 clear_display()
 print("Combined app running")
@@ -427,7 +427,7 @@ while true do
         if tsb.first_sprite_index > 0 and active == total then
           clear_display()
           render_text_block(tsb)
-          data.app_data[TEXT_SPRITE_BLOCK] = nil
+          -- data.app_data[TEXT_SPRITE_BLOCK] = nil
           collectgarbage()
         end
       end
