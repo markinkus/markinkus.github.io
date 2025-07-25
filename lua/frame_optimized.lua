@@ -84,7 +84,6 @@ local function render_text_block(tsb)
   end
   frame.display.show()
 end
-
 clear_display()
 print("Combined app running")
 while true do
@@ -113,11 +112,10 @@ while true do
       if data.app_data[TEXT_SPRITE_BLOCK] then
         local tsb = data.app_data[TEXT_SPRITE_BLOCK]
         local active = tsb.active_sprites or #tsb.sprites
-        local total  = tsb.total_sprites  or #tsb.sprites
-        if tsb.first_sprite_index > 0 and active == total then
+        local total  = tsb.total_sprites  or (tsb.offsets and #tsb.offsets) or 0
           clear_display()
           render_text_block(tsb)
-          -- data.app_data[TEXT_SPRITE_BLOCK] = nil
+          data.app_data[TEXT_SPRITE_BLOCK] = nil
           collectgarbage()
         end
       end
