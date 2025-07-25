@@ -82,7 +82,7 @@ local function render_text_block(tsb)
     end
     frame.display.bitmap(1, y + 1, spr.width, 2 ^ spr.bpp, 0, spr.pixel_data)
   end
-  -- frame.display.show()
+  frame.display.show()
 end
 
 clear_display()
