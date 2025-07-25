@@ -66,9 +66,15 @@ local function render_image_block(isb)
   frame.display.show()
 end
 local function render_text_block(tsb)
-  for index, spr in ipairs(tsb.sprites) do
-    frame.display.bitmap(1, tsb.offsets[index].y + 1, spr.width, 2^spr.bpp, 0+index, spr.pixel_data)
-	end
+  if tsb.first_sprite_index == 0 then return end
+  local spr0 = tsb.sprites[tsb.first_sprite_index]
+  sprite.set_palette(spr0.num_colors, spr0.palette_data)
+  local active = tsb.active_sprites or #tsb.sprites
+  for idx = 1, active do
+    local spr = tsb.sprites[idx]
+    local y   = (idx - 1) * spr.height
+    frame.display.bitmap(1, y + 1, spr.width, 2 ^ spr.bpp, 0, spr.pixel_data)
+  end
   frame.display.show()
 end
 clear_display()
