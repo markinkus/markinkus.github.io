@@ -70,11 +70,9 @@ local function render_text_block(tsb)
   local spr0 = tsb.sprites[tsb.first_sprite_index]
   sprite.set_palette(spr0.num_colors, spr0.palette_data)
   local active = tsb.active_sprites or #tsb.sprites
-  local total  = tsb.total_sprites  or #tsb.sprites
   for idx = 1, active do
     local spr = tsb.sprites[idx]
-    local y = (tsb.offsets and tsb.offsets[idx] and tsb.offsets[idx].y)
-              or ((idx - 1) * spr.height)
+    local y = (idx - 1) * spr.height
     frame.display.bitmap(1, y + 1, spr.width, 2 ^ spr.bpp, 0, spr.pixel_data)
   end
   frame.display.show()

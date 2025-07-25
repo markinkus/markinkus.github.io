@@ -403,16 +403,34 @@ export default function App() {
 
   /* ─────────────── Clear & Disconnect ─────────────── */
   const handleClear = async () => {
-    if (!frame) return;
-    await frame.sendMessage(0x0a, new TxPlainText("").pack());
-    setStatus("Schermo pulito");
+    if (!frame && !frameOPT) return;
+    if (frame) {
+      addLog("▶ clearFrame");
+      await frame.sendMessage(0x0a, new TxPlainText("").pack());
+      setStatus("Schermo pulito");
+    }
+    if (frameOPT) {
+      addLog("▶ clearFrameOPT");
+      await frameOPT.sendMessage(0x0a, new TxPlainText("").pack());
+      setStatus("Schermo pulito");
+    }
   };
+
   const handleDisconnect = async () => {
-    if (!frame) return;
+    if (!frame && !frameOPT) return;
     try {
-      await frame.stopFrameApp();
-      await frame.disconnect();
-      setFrame(null);
+      if (frame) {
+        addLog("▶ disconnectFrame");
+        await frame.stopFrameApp();
+        await frame.disconnect();
+        setFrame(null);
+      }
+      if (frameOPT) {
+        addLog("▶ disconnectFrameOPT");
+        await frameOPT.stopFrameApp();
+        await frameOPT.disconnect();
+        setFrameOPT(null);
+      }
       setStatus("Disconnesso");
     } catch (e: any) {
       setStatus("Errore disconnect: " + e.message);
@@ -570,7 +588,7 @@ export default function App() {
       `${timeStr},` +
       `${weatherStr},` +
       `${distStr}`;
-      
+
     const tsb = new TxTextSpriteBlock({
       width: 500,
       fontSize: 28,
