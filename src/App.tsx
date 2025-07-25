@@ -533,9 +533,9 @@ export default function App() {
       `${distStr}`
     ].join("\n");
     const tsb = new TxTextSpriteBlock({
-      width: 500,
-      fontSize: 28,
-      maxDisplayRows: 5,
+      width: 600,
+      fontSize: 30,
+      maxDisplayRows: 7,
       text: dash
     });
 
