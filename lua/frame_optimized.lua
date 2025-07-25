@@ -69,9 +69,12 @@ local function render_text_block(tsb)
   if tsb.first_sprite_index == 0 then return end
   local spr0 = tsb.sprites[tsb.first_sprite_index]
   sprite.set_palette(spr0.num_colors, spr0.palette_data)
-  for idx = 1, tsb.active_sprites do
+  local active = tsb.active_sprites or #tsb.sprites
+  local total  = tsb.total_sprites  or #tsb.sprites
+  for idx = 1, active do
     local spr = tsb.sprites[idx]
-    local y   = tsb.offsets[idx].y or ((idx - 1) * spr.height)
+    local y = (tsb.offsets and tsb.offsets[idx] and tsb.offsets[idx].y)
+              or ((idx - 1) * spr.height)
     frame.display.bitmap(1, y + 1, spr.width, 2 ^ spr.bpp, 0, spr.pixel_data)
   end
   frame.display.show()
@@ -103,8 +106,10 @@ while true do
       end
       if data.app_data[TEXT_SPRITE_BLOCK] then
         local tsb = data.app_data[TEXT_SPRITE_BLOCK]
-        if tsb.first_sprite_index > 0
-           and (tsb.progressive_render or tsb.active_sprites == tsb.total_sprites) then
+        local active = tsb.active_sprites or #tsb.sprites
+        local total  = tsb.total_sprites  or #tsb.sprites
+        if tsb.first_sprite_index > 0 and
+           (tsb.progressive_render or active == total) then
           clear_display()
           render_text_block(tsb)
           data.app_data[TEXT_SPRITE_BLOCK] = nil

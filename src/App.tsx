@@ -462,9 +462,7 @@ export default function App() {
     //   `${distStr}`
     // ].join("\n");
 
-    const dash = [
-      `Mark-BullVerge: ${dateStr}, ${timeStr}, ${weatherStr}, ${distStr}`
-    ].join("\n");
+    const dash = `Mark-BullVerge: ${dateStr}|${timeStr}|${weatherStr}|${distStr}`;
 
     // invia TUTTO in un solo TxPlainText, paletteOffset=1 (bianco)
     await frame.sendMessage(
@@ -531,7 +529,63 @@ export default function App() {
     }
     setStatus("Dashboard inviata");
   };
+  const handleDashboardOPT2 = async () => {
+    if (!frameOPT) return setStatus("Connetti prima");
+    addLog("▶ showDashboard");
 
+    // prepara i dati
+    const now = new Date();
+    const dateStr = now.toLocaleDateString(undefined, { weekday: 'short', day: '2-digit', month: 'short' });
+    const timeStr = now.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+
+    let weatherStr = "n/d";
+    if (pos) {
+      const coordinates = `${pos.lat.toFixed(5)}, ${pos.lng.toFixed(5)}`;
+      weatherStr = `Coord: ${coordinates},\n`;
+      try {
+        const res = await fetch(
+          `https://api.open-meteo.com/v1/forecast?latitude=${pos.lat}&longitude=${pos.lng}&current_weather=true`
+        );
+        const { current_weather: cw } = await res.json();
+        weatherStr += `${cw.temperature}°C, vento ${cw.windspeed} km/h`;
+      } catch { }
+    }
+
+    // calcola la distanza in km (se hai già `dest`)
+    let distStr = "–";
+    if (dest && pos) {
+      const R = 6371e3;
+      const φ1 = pos.lat * Math.PI / 180, φ2 = dest.lat * Math.PI / 180;
+      const Δφ = (dest.lat - pos.lat) * Math.PI / 180;
+      const Δλ = (dest.lng - pos.lng) * Math.PI / 180;
+      const a = Math.sin(Δφ / 2) ** 2 + Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) ** 2;
+      const d = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      distStr = `${(d / 1000).toFixed(1)} km`;
+    }
+
+    // componi il multilinea
+    const dash =
+      `Mark - BullVerge: ` +
+      `${dateStr},` +
+      `${timeStr},` +
+      `${weatherStr},` +
+      `${distStr}`;
+      
+    const tsb = new TxTextSpriteBlock({
+      width: 500,
+      fontSize: 28,
+      maxDisplayRows: 5,
+      text: dash
+    });
+
+    // invia prima header poi tutte le slice
+    await frameOPT.sendMessage(0x22, tsb.pack());
+
+    for (const slice of tsb.sprites) {
+      await frameOPT.sendMessage(0x22, slice.pack());
+    }
+    setStatus("Dashboard inviata");
+  };
   const btn = (st: any, dis = false) => ({ ...st, ...(dis ? styles.btnDisabled : {}) });
 
   return (
@@ -543,13 +597,14 @@ export default function App() {
         <button onClick={handleConnectOPT} style={btn(styles.btnSecondary, !!frameOPT)}>🔌Connetti & Carica OPT</button>
         <button onClick={handleDashboard} disabled={!frame} style={btn(styles.btnSecondary, !frame)}>📊 Dashboard</button>
         <button onClick={handleDashboardOPT} disabled={!frameOPT} style={btn(styles.btnSecondary, !frameOPT)}>📊 Dashboard OPT</button>
-        <button onClick={handleCapture} disabled={!frame} style={btn(styles.btnPrimary, !frame)}>📸 Cattura Foto</button>
+        <button onClick={handleDashboardOPT2} disabled={!frameOPT} style={btn(styles.btnSecondary, !frameOPT)}>📊 Dashboard OPT2</button>
+        <button onClick={handleCapture} disabled={!frame && !frameOPT} style={btn(styles.btnPrimary, (!frame && !frameOPT))}>📸 Cattura Foto</button>
         <button onClick={() => setShowMedia((v) => !v)} disabled={!photoUrl} style={btn(styles.btnSecondary, !photoUrl)}>
           {showMedia ? "Nascondi Media" : "Mostra Media"}
         </button>
-        <button onClick={handleClear} disabled={!frame} style={btn(styles.btnSecondary, !frame)}>🧹 Pulisci Schermo</button>
+        <button onClick={handleClear} disabled={!frame && !frameOPT} style={btn(styles.btnSecondary, (!frame && !frameOPT))}>🧹 Pulisci Schermo</button>
         <div style={{ marginBottom: 8 }}>
-          <button onClick={sendMapToFrame} disabled={!frame}>🗺️ Mostra Mappa</button>
+          <button onClick={sendMapToFrame} disabled={!frame && !frameOPT}>🗺️ Mostra Mappa</button>
           <button onClick={startAutoUpdate}>▶ Auto</button>
           <button onClick={stopAutoUpdate}>■ Stop</button>
         </div>
@@ -569,14 +624,14 @@ export default function App() {
             value={destInput.lng}
             onChange={(e) => setDestInput({ ...destInput, lng: e.target.value })}
           />
-          <button onClick={handleSetDest} style={btn(styles.btnPrimary, !frame)} disabled={!frame}>
+          <button onClick={handleSetDest} style={btn(styles.btnPrimary, (!frame && !frameOPT))} disabled={!frame && !frameOPT}>
             📍 Avvia Navigazione
           </button>
         </div>
 
         <button onClick={handleDisconnect} disabled={!frame} style={btn(styles.btnSecondary, !frame)}>🔌Disconnetti</button>
         <button onClick={handleDisconnect} disabled={!frameOPT} style={btn(styles.btnSecondary, !frameOPT)}>🔌Disconnetti OPT</button>
-        <button onClick={handleGenerateImage} disabled={!frame || !prompt} style={btn(styles.btnPrimary, !frame || !prompt)}>🎨 Genera Immagine</button>
+        <button onClick={handleGenerateImage} disabled={(!frame && !frameOPT) || !prompt} style={btn(styles.btnPrimary, (!frame && !frameOPT) || !prompt)}>🎨 Genera Immagine</button>
       </div>
 
       {showMedia && photoUrl && (
@@ -593,7 +648,7 @@ export default function App() {
       )}
 
       <textarea rows={3} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Prompt…" style={styles.textarea} />
-      <button onClick={handleSend} disabled={!frame && !prompt} style={btn(styles.sendButton, !frame && !prompt)}>Invia a Gemini & Frame</button>
+      <button onClick={handleSend} disabled={(!frame && !frameOPT) && !prompt} style={btn(styles.sendButton, (!frame && !frameOPT) && !prompt)}>Invia a Gemini & Frame</button>
 
       <div style={styles.status}><b>Stato:</b> {status}</div>
       <pre style={styles.logs}>{logs.join("\n")}</pre>
