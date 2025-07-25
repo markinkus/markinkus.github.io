@@ -524,10 +524,10 @@ export default function App() {
     });
 
     // invia prima header poi tutte le slice
-    await frame.sendMessage(0x22, tsb.pack());
+    await frameOPT.sendMessage(0x22, tsb.pack());
 
     for (const slice of tsb.sprites) {
-      await frame.sendMessage(0x22, slice.pack());
+      await frameOPT.sendMessage(0x22, slice.pack());
     }
     setStatus("Dashboard inviata");
   };
