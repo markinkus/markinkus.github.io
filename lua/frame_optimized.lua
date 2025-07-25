@@ -72,19 +72,11 @@ local function render_text_block(tsb)
   local active = tsb.active_sprites or #tsb.sprites
   for idx = 1, active do
     local spr = tsb.sprites[idx]
-    local y
-    if tsb.offsets and tsb.offsets[idx] then
-      y = tsb.offsets[idx].y
-    elseif tsb.sprite_line_height then
-      y = tsb.sprite_line_height * (idx - 1)
-    else
-      y = (idx - 1) * spr.height
-    end
+    local y   = (idx - 1) * spr.height
     frame.display.bitmap(1, y + 1, spr.width, 2 ^ spr.bpp, 0, spr.pixel_data)
   end
   frame.display.show()
 end
-
 clear_display()
 print("Combined app running")
 while true do
