@@ -475,7 +475,7 @@ export default function App() {
   };
 
   const handleDashboardOPT = async () => {
-    if (!frame) return setStatus("Connetti prima");
+    if (!frameOPT) return setStatus("Connetti prima");
     addLog("▶ showDashboard");
 
     // prepara i dati
