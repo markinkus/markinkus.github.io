@@ -424,11 +424,9 @@ while true do
         local tsb = data.app_data[TEXT_SPRITE_BLOCK]
         local active = tsb.active_sprites or #tsb.sprites
         local total  = tsb.total_sprites  or #tsb.sprites
-        if tsb.first_sprite_index > 0 and
-           (tsb.progressive_render or active == total) then
+        if tsb.first_sprite_index > 0 and active == total then
           clear_display()
           render_text_block(tsb)
-          data.app_data[TEXT_SPRITE_BLOCK] = nil
           collectgarbage()
         end
       end

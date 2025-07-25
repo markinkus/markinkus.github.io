@@ -536,7 +536,7 @@ export default function App() {
       width: 600,
       fontSize: 30,
       maxDisplayRows: 7,
-      text: dash
+      text: dash,
     });
 
     // invia prima header poi tutte le slice
