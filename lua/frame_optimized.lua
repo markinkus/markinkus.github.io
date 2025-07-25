@@ -102,10 +102,14 @@ while true do
         collectgarbage()
       end
       if data.app_data[TEXT_SPRITE_BLOCK] then
-        clear_display()
-        render_text_block(data.app_data[TEXT_SPRITE_BLOCK])
-        data.app_data[TEXT_SPRITE_BLOCK] = nil
-        collectgarbage()
+        local tsb = data.app_data[TEXT_SPRITE_BLOCK]
+        if tsb.first_sprite_index > 0 and
+           (tsb.progressive_render or tsb.active_sprites == tsb.total_sprites) then
+              clear_display()
+              render_text_block(tsb)
+              data.app_data[TEXT_SPRITE_BLOCK] = nil
+              collectgarbage()
+        end
       end
     end
   end)
