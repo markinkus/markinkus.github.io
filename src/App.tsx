@@ -12,18 +12,32 @@ import markinoFrameApp from "../lua/markino_frame_app.lua?raw";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import html2canvas from "html2canvas";
-import leafletImage from "leaflet-image";
 
-const GEMINI_API_KEY = "AIzaSyCUspjopyRDqf8iR-ftL7UsPyaYfAt1p_M";
+const DEFAULT_GEMINI_API_KEY =
+  import.meta.env.VITE_GEMINI_API_KEY?.trim() || "";
+const GEMINI_MODEL = import.meta.env.VITE_GEMINI_MODEL?.trim() || "gemini-2.5-flash";
 const OSRM_URL = "https://router.project-osrm.org";
 
 const blobUrl = (bytes: ArrayBuffer | Uint8Array, mime = "image/jpeg") =>
   URL.createObjectURL(new Blob([bytes], { type: mime }));
 
-async function fetchGemini(prompt: string, base64Image?: string): Promise<string> {
-  const url =
-    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" +
-    GEMINI_API_KEY;
+async function fetchGemini(
+  prompt: string,
+  apiKey: string,
+  base64Image?: string,
+): Promise<string> {
+  const cleanKey = apiKey.trim();
+  if (!cleanKey) {
+    throw new Error("Inserisci una Gemini API key.");
+  }
+
+  const url = new URL(
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+      GEMINI_MODEL,
+    )}:generateContent`,
+  );
+  url.searchParams.set("key", cleanKey);
+
   const parts: any[] = [];
   if (base64Image) {
     const data = base64Image.replace(/^data:image\/\w+;base64,/, "");
@@ -45,6 +59,7 @@ async function fetchGemini(prompt: string, base64Image?: string): Promise<string
 export default function App() {
   // ───────── UI state ─────────
   const [frame, setFrame] = useState<FrameMsg | null>(null);
+  const [geminiApiKey, setGeminiApiKey] = useState(DEFAULT_GEMINI_API_KEY);
   const [prompt, setPrompt] = useState("");
   const [response, setResponse] = useState("");
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
@@ -64,7 +79,7 @@ export default function App() {
   // mappa Leaflet
   const mapRef = useRef<HTMLDivElement>(null);
   const leafletMap = useRef<L.Map | null>(null);
-  const autoUpdateRef = useRef<NodeJS.Timeout | null>(null);
+  const autoUpdateRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const poiList = [
     { name: "Bar", lat: 40.8367, lng: 16.5931 },
@@ -199,6 +214,8 @@ export default function App() {
         StdLua.PlainTextMin,
         StdLua.CameraMin,
         StdLua.SpriteMin,
+        StdLua.ImageSpriteBlockMin,
+        StdLua.TextSpriteBlockMin,
       ]);
       addLog("✔ libs loaded");
       await f.uploadFrameApp(markinoFrameApp);
@@ -208,10 +225,15 @@ export default function App() {
       setStatus("Occhiali pronti!");
       await f.sendMessage(
         0x0a,
-        new TxPlainText("BullVerge-Frame Connect", 1, 1, /*paletteOffset=*/9).pack()
+        new TxPlainText({
+          text: "BullVerge-Frame Connect",
+          x: 1,
+          y: 1,
+          paletteOffset: 9,
+        }).pack()
       );
       await sleep(2000);
-      await f.sendMessage(0x0a, new TxPlainText("", 1, 1, 1).pack());
+      await f.sendMessage(0x0a, new TxPlainText({ text: "", x: 1, y: 1, paletteOffset: 1 }).pack());
 
     } catch (e: any) {
       addLog("✖ connect: " + e.message);
@@ -285,7 +307,7 @@ export default function App() {
     try {
       const rx = new RxPhoto({});
       const q = await rx.attach(frame);
-      await frame.sendMessage(0x0d, new TxCaptureSettings(720).pack());
+      await frame.sendMessage(0x0d, new TxCaptureSettings({ resolution: 720 }).pack());
       const jpeg = await q.get();
       rx.detach(frame);
       const url = blobUrl(jpeg);
@@ -316,8 +338,7 @@ export default function App() {
       setShowMedia(true);
 
       const sprite = await TxSprite.fromImageBytes(imgBytes, 36000);
-      // toPngBytes non è tipizzato nelle declarations → cast any
-      const pngBytes: Uint8Array | undefined = (sprite as any).toPngBytes?.();
+      const pngBytes = sprite.toPngBytes();
       if (pngBytes) setSpriteUrl(blobUrl(pngBytes, "image/png"));
 
       await frame.sendMessage(0x20, sprite.pack());
@@ -344,11 +365,11 @@ export default function App() {
           rd.readAsDataURL(b);
         });
       }
-      const reply = await fetchGemini(prompt, base64Image);
+      const reply = await fetchGemini(prompt, geminiApiKey, base64Image);
       setResponse(reply);
       addLog("✔ Gemini reply");
       if (frame) {
-        await frame.sendMessage(0x0a, new TxPlainText(reply).pack());
+        await frame.sendMessage(0x0a, new TxPlainText({ text: reply }).pack());
         setStatus("Risposta mostrata sugli occhiali!");
       }
     } catch (e: any) {
@@ -361,7 +382,7 @@ export default function App() {
   const handleClear = async () => {
     if (!frame) return;
       addLog("▶ clearFrame");
-      await frame.sendMessage(0x0a, new TxPlainText("").pack());
+      await frame.sendMessage(0x0a, new TxPlainText({ text: "" }).pack());
       setStatus("Schermo pulito");
   };
 
@@ -493,8 +514,15 @@ export default function App() {
         </div>
       )}
 
+      <input
+        type="password"
+        value={geminiApiKey}
+        onChange={(e) => setGeminiApiKey(e.target.value)}
+        placeholder="Gemini API key"
+        style={styles.fullInput}
+      />
       <textarea rows={3} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Prompt…" style={styles.textarea} />
-      <button onClick={handleSend} disabled={(!frame && !prompt)} style={btn(styles.sendButton, (!frame && !prompt))}>Invia a Gemini & Frame</button>
+      <button onClick={handleSend} disabled={!prompt || !geminiApiKey.trim()} style={btn(styles.sendButton, (!prompt || !geminiApiKey.trim()))}>Invia a Gemini & Frame</button>
 
       <div style={styles.status}><b>Stato:</b> {status}</div>
       <pre style={styles.logs}>{logs.join("\n")}</pre>
@@ -590,5 +618,51 @@ const styles: Record<string, React.CSSProperties> = {
     border: "1px solid #374151",
     backgroundColor: "#1f2937",
     color: "#f3f4f6",
+  },
+  fullInput: {
+    width: "100%",
+    marginBottom: 8,
+    padding: 10,
+    borderRadius: 6,
+    border: "1px solid #374151",
+    backgroundColor: "#1f2937",
+    color: "#f3f4f6",
+  },
+  textarea: {
+    width: "100%",
+    minHeight: 96,
+    marginBottom: 8,
+    padding: 10,
+    borderRadius: 6,
+    border: "1px solid #374151",
+    backgroundColor: "#f9fafb",
+    color: "#111827",
+    resize: "vertical",
+  },
+  sendButton: {
+    display: "block",
+    width: "100%",
+    marginBottom: 12,
+    padding: "10px 14px",
+    backgroundColor: "#2563eb",
+    color: "#fff",
+    border: "none",
+    borderRadius: 6,
+    cursor: "pointer",
+    fontWeight: 700,
+  },
+  response: {
+    marginBottom: 16,
+    color: "#f3f4f6",
+  },
+  responsePre: {
+    minHeight: 64,
+    marginTop: 8,
+    padding: 12,
+    borderRadius: 6,
+    backgroundColor: "#1f2937",
+    color: "#d1d5db",
+    overflowX: "auto",
+    whiteSpace: "pre-wrap",
   },
 };
