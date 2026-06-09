@@ -12,14 +12,44 @@ import markinoFrameApp from "../lua/markino_frame_app.lua?raw";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import html2canvas from "html2canvas";
+import leafletImage from "leaflet-image";
 
 const DEFAULT_GEMINI_API_KEY =
   import.meta.env.VITE_GEMINI_API_KEY?.trim() || "";
 const GEMINI_MODEL = import.meta.env.VITE_GEMINI_MODEL?.trim() || "gemini-2.5-flash";
 const OSRM_URL = "https://router.project-osrm.org";
+const DEFAULT_CENTER = { lat: 40.8362, lng: 16.5936 };
+const ROUTE_DEBOUNCE_MS = 700;
+
+type LatLngPoint = { lat: number; lng: number };
+type GpsStatus = "checking" | "watching" | "unavailable" | "denied" | "error";
+type RouteSummary = {
+  distanceMeters: number;
+  durationSeconds: number;
+};
 
 const blobUrl = (bytes: ArrayBuffer | Uint8Array, mime = "image/jpeg") =>
   URL.createObjectURL(new Blob([bytes], { type: mime }));
+
+const formatCoord = (value: number) => value.toFixed(5);
+
+const formatDistance = (meters: number) =>
+  meters >= 1000 ? `${(meters / 1000).toFixed(1)} km` : `${Math.round(meters)} m`;
+
+const formatDuration = (seconds: number) => {
+  const minutes = Math.max(1, Math.round(seconds / 60));
+  return minutes >= 60
+    ? `${Math.floor(minutes / 60)}h ${minutes % 60}m`
+    : `${minutes} min`;
+};
+
+const parseCoordinate = (value: string) => {
+  const parsed = Number.parseFloat(value.replace(",", "."));
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const isValidLatLng = (point: LatLngPoint) =>
+  point.lat >= -90 && point.lat <= 90 && point.lng >= -180 && point.lng <= 180;
 
 async function fetchGemini(
   prompt: string,
@@ -68,18 +98,25 @@ export default function App() {
   const [status, setStatus] = useState("Pronto!");
   const [logs, setLogs] = useState<string[]>([]);
   const [heading, setHeading] = useState(0);
-  const [pos, setPos] = useState<{ lat: number; lng: number } | null>(null);
-  // per navigazione
+  const [pos, setPos] = useState<LatLngPoint | null>(null);
+  const [gpsStatus, setGpsStatus] = useState<GpsStatus>("checking");
+  const [gpsError, setGpsError] = useState("");
+  const [accuracy, setAccuracy] = useState<number | null>(null);
+  const [followGps, setFollowGps] = useState(true);
+  const [routeSummary, setRouteSummary] = useState<RouteSummary | null>(null);
+  const [isRouting, setIsRouting] = useState(false);
   const [destInput, setDestInput] = useState({ lat: "", lng: "" });
-  const [dest, setDest] = useState<{ lat: number; lng: number } | null>(null);
+  const [dest, setDest] = useState<LatLngPoint | null>(null);
   const routeLayer = useRef<L.Polyline | null>(null);
-  // aggiungi questo ref
+  const userMarkerLayer = useRef<L.CircleMarker | null>(null);
+  const accuracyLayer = useRef<L.Circle | null>(null);
   const poiLayer = useRef<L.LayerGroup | null>(null);
 
-  // mappa Leaflet
   const mapRef = useRef<HTMLDivElement>(null);
   const leafletMap = useRef<L.Map | null>(null);
   const autoUpdateRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const routeAbortRef = useRef<AbortController | null>(null);
+  const lastRouteKeyRef = useRef<string | null>(null);
 
   const poiList = [
     { name: "Bar", lat: 40.8367, lng: 16.5931 },
@@ -88,6 +125,14 @@ export default function App() {
 
   const addLog = (m: string) =>
     setLogs((l) => [...l.slice(-19), `${new Date().toLocaleTimeString()}: ${m}`]);
+
+  const destinationFromInput = (): LatLngPoint | null => {
+    const lat = parseCoordinate(destInput.lat);
+    const lng = parseCoordinate(destInput.lng);
+    if (lat === null || lng === null) return null;
+    const point = { lat, lng };
+    return isValidLatLng(point) ? point : null;
+  };
 
   // ───────── Compass listener ─────────
   useEffect(() => {
@@ -100,10 +145,28 @@ export default function App() {
 
   // ───────── Geolocation ─────────
   useEffect(() => {
+    if (!("geolocation" in navigator)) {
+      setGpsStatus("unavailable");
+      setGpsError("GPS non disponibile in questo browser.");
+      return;
+    }
+
     const id = navigator.geolocation.watchPosition(
-      (p) => setPos({ lat: p.coords.latitude, lng: p.coords.longitude }),
-      () => { },
-      { enableHighAccuracy: true }
+      (p) => {
+        setGpsStatus("watching");
+        setGpsError("");
+        setAccuracy(Number.isFinite(p.coords.accuracy) ? p.coords.accuracy : null);
+        setPos({ lat: p.coords.latitude, lng: p.coords.longitude });
+      },
+      (error) => {
+        setGpsStatus(error.code === error.PERMISSION_DENIED ? "denied" : "error");
+        setGpsError(error.message || "Impossibile leggere la posizione GPS.");
+      },
+      {
+        enableHighAccuracy: true,
+        maximumAge: 2500,
+        timeout: 15000,
+      }
     );
     return () => navigator.geolocation.clearWatch(id);
   }, []);
@@ -112,86 +175,230 @@ export default function App() {
   useEffect(() => {
     if (!mapRef.current || leafletMap.current) return;
 
-    // crea la mappa
-    leafletMap.current = L.map(mapRef.current, {
-      center: [40.8362, 16.5936],
-      zoom: 15,
-      zoomControl: false,
+    const map = L.map(mapRef.current, {
+      center: [DEFAULT_CENTER.lat, DEFAULT_CENTER.lng],
+      zoom: 16,
+      zoomControl: true,
       attributionControl: false,
       preferCanvas: true,
     });
-
-    // base layer
-    // L.tileLayer(
-    //   "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
-    //   { subdomains: "abcd", crossOrigin: true, attribution: "" }
-    // ).addTo(leafletMap.current);
+    leafletMap.current = map;
 
     L.tileLayer(
       "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
       {
         subdomains: "abcd",
-        crossOrigin: true,
-        attribution: ""
+        crossOrigin: "anonymous",
+        attribution: "",
       }
-    ).addTo(leafletMap.current!);
+    ).addTo(map);
 
-
-
-    // qui creo il layer group *solo* per i POI
-    poiLayer.current = L.layerGroup().addTo(leafletMap.current);
+    poiLayer.current = L.layerGroup().addTo(map);
     poiList.forEach(({ lat, lng, name }) => {
-      L.marker([lat, lng])
-        .bindPopup(name)
+      L.circleMarker([lat, lng], {
+        radius: 7,
+        color: "#0f766e",
+        fillColor: "#14b8a6",
+        fillOpacity: 0.9,
+        weight: 2,
+      })
+        .bindTooltip(name)
         .addTo(poiLayer.current!);
     });
+
+    map.on("click", (event: L.LeafletMouseEvent) => {
+      const point = { lat: event.latlng.lat, lng: event.latlng.lng };
+      setDest(point);
+      setDestInput({
+        lat: formatCoord(point.lat),
+        lng: formatCoord(point.lng),
+      });
+      setFollowGps(false);
+      setStatus("Destinazione impostata dalla mappa.");
+    });
+
+    setTimeout(() => map.invalidateSize(), 0);
+
+    return () => {
+      routeAbortRef.current?.abort();
+      map.remove();
+      leafletMap.current = null;
+      poiLayer.current = null;
+      routeLayer.current = null;
+      userMarkerLayer.current = null;
+      accuracyLayer.current = null;
+    };
   }, []);
+
   useEffect(() => {
     if (!leafletMap.current || !pos) return;
 
-    // 1) rimuovo solo i marker utente (CircleMarker) e la vecchia rotta (Polyline)
-    leafletMap.current.eachLayer((layer) => {
-      if (layer instanceof L.CircleMarker) {
-        leafletMap.current!.removeLayer(layer);
+    const map = leafletMap.current;
+    const latLng = L.latLng(pos.lat, pos.lng);
+
+    if (!accuracyLayer.current) {
+      accuracyLayer.current = L.circle(latLng, {
+        radius: accuracy ?? 0,
+        color: "#2563eb",
+        fillColor: "#60a5fa",
+        fillOpacity: 0.12,
+        weight: 1,
+      }).addTo(map);
+    } else {
+      accuracyLayer.current.setLatLng(latLng);
+      accuracyLayer.current.setRadius(accuracy ?? 0);
+    }
+
+    if (!userMarkerLayer.current) {
+      userMarkerLayer.current = L.circleMarker(latLng, {
+        radius: 12,
+        weight: 3,
+        color: "#C80000",
+        fillColor: "#FFD600",
+        fillOpacity: 1,
+      }).addTo(map);
+    } else {
+      userMarkerLayer.current.setLatLng(latLng);
+    }
+
+    if (followGps) {
+      map.setView(latLng, Math.max(map.getZoom(), 16), { animate: false });
+    }
+  }, [accuracy, followGps, pos]);
+
+  useEffect(() => {
+    const map = leafletMap.current;
+
+    if (!map || !pos || !dest) {
+      routeAbortRef.current?.abort();
+      lastRouteKeyRef.current = null;
+
+      if (routeLayer.current && map) {
+        routeLayer.current.removeFrom(map);
+        routeLayer.current = null;
       }
-    });
+
+      setRouteSummary(null);
+      setIsRouting(false);
+      return;
+    }
+
+    const routeKey = [
+      pos.lat.toFixed(4),
+      pos.lng.toFixed(4),
+      dest.lat.toFixed(5),
+      dest.lng.toFixed(5),
+    ].join(",");
+
+    if (lastRouteKeyRef.current === routeKey && routeLayer.current) {
+      setIsRouting(false);
+      return;
+    }
+
+    routeAbortRef.current?.abort();
+
     if (routeLayer.current) {
-      leafletMap.current.removeLayer(routeLayer.current);
+      routeLayer.current.removeFrom(map);
       routeLayer.current = null;
     }
 
-    // 2) ridisegno il marker utente
-    L.circleMarker([pos.lat, pos.lng], {
-      radius: 12,         // grandezza
-      weight: 3,          // spessore bordo
-      color: "#C80000",   // bordo rosso
-      fillColor: "#FFD600", // centro giallo
-      fillOpacity: 1      // pienamente opaco
-    }).addTo(leafletMap.current!);
+    setRouteSummary(null);
+    lastRouteKeyRef.current = routeKey;
 
+    const controller = new AbortController();
+    routeAbortRef.current = controller;
+    setIsRouting(true);
 
-    // 3) se ho una destinazione, calcolo e disegno la rotta
-    if (dest) {
-      fetch(
-        `${OSRM_URL}/route/v1/driving/` +
-        `${pos.lng},${pos.lat};${dest.lng},${dest.lat}` +
-        `?overview=full&geometries=geojson`
-      )
-        .then((r) => r.json())
-        .then((js) => {
-          const coords = js.routes[0].geometry.coordinates.map(
-            ([lng, lat]: [number, number]) => [lat, lng] as [number, number]
-          );
-          routeLayer.current = L.polyline(coords, {
-            color: "#00C8FF",
-            weight: 10,
-          }).addTo(leafletMap.current!);
+    const url =
+      `${OSRM_URL}/route/v1/driving/` +
+      `${pos.lng},${pos.lat};${dest.lng},${dest.lat}` +
+      `?overview=full&geometries=geojson&steps=false`;
+
+    const routeTimer = window.setTimeout(() => {
+      fetch(url, { signal: controller.signal })
+        .then(async (response) => {
+          if (!response.ok) {
+            throw new Error(`OSRM HTTP ${response.status}`);
+          }
+          return response.json();
         })
-        .catch((e) => console.warn("OSRM error", e));
-    }
-  }, [pos, dest]);
+        .then((payload) => {
+          if (controller.signal.aborted) return;
+
+          const route = payload.routes?.[0];
+          const coordinates = route?.geometry?.coordinates;
+
+          if (!route || !Array.isArray(coordinates) || coordinates.length === 0) {
+            throw new Error("Nessuna rotta trovata.");
+          }
+
+          const latLngs = coordinates.map(
+            ([lng, lat]: [number, number]) => [lat, lng] as [number, number],
+          );
+
+          routeLayer.current = L.polyline(latLngs, {
+            color: "#00C8FF",
+            weight: 8,
+            opacity: 0.9,
+          }).addTo(map);
+
+          setRouteSummary({
+            distanceMeters: route.distance,
+            durationSeconds: route.duration,
+          });
+
+          map.fitBounds(routeLayer.current.getBounds().pad(0.18), {
+            animate: false,
+          });
+        })
+        .catch((error) => {
+          if (error instanceof DOMException && error.name === "AbortError") return;
+          lastRouteKeyRef.current = null;
+          console.warn("OSRM error", error);
+          setStatus("Errore rotta GPS: " + (error?.message || String(error)));
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) {
+            setIsRouting(false);
+            routeAbortRef.current = null;
+          }
+        });
+    }, ROUTE_DEBOUNCE_MS);
+
+    return () => {
+      window.clearTimeout(routeTimer);
+      controller.abort();
+    };
+  }, [dest, pos]);
 
   const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
+
+  const mapToCanvas = async () => {
+    if (!mapRef.current || !leafletMap.current) {
+      throw new Error("Mappa non inizializzata.");
+    }
+
+    leafletMap.current.invalidateSize();
+    await sleep(250);
+
+    try {
+      return await new Promise<HTMLCanvasElement>((resolve, reject) => {
+        leafletImage(leafletMap.current!, (err, canvas) => {
+          if (err) reject(err);
+          else resolve(canvas);
+        });
+      });
+    } catch (error) {
+      console.warn("leaflet-image fallback", error);
+      return html2canvas(mapRef.current, {
+        useCORS: true,
+        allowTaint: false,
+        backgroundColor: "#f8fafc",
+        scale: 2,
+      });
+    }
+  };
+
   // ───────── Connect & start Frame ─────────
   const handleConnect = async () => {
     setStatus("Connessione in corso…");
@@ -250,15 +457,8 @@ export default function App() {
     addLog("▶ sendMapToFrame");
 
     try {
-      // catturo TUTTO quello che vedi nella <div ref={mapRef}>
-      const canvas = await html2canvas(mapRef.current!, {
-        useCORS: true,
-        allowTaint: false,
-        backgroundColor: "#111827",  // match dark theme
-        scale: 2                      // più risoluzione
-      });
+      const canvas = await mapToCanvas();
 
-      // trasformo in blob → arrayBuffer → TxSprite
       const blob: Blob = await new Promise((res, rej) =>
         canvas.toBlob(b => b ? res(b) : rej("toBlob fallito"), "image/jpeg", 0.9)
       );
@@ -276,10 +476,16 @@ export default function App() {
 
   // ───────── Auto‐update ogni 5s ─────────
   const startAutoUpdate = () => {
+    if (!frame) {
+      setStatus("Connetti prima il Frame per usare Auto mappa.");
+      return;
+    }
     if (autoUpdateRef.current) return;
+    void sendMapToFrame();
     autoUpdateRef.current = setInterval(sendMapToFrame, 5000);
     addLog("▶ Auto‐update ON");
   };
+
   const stopAutoUpdate = () => {
     if (autoUpdateRef.current) {
       clearInterval(autoUpdateRef.current);
@@ -288,15 +494,42 @@ export default function App() {
     }
   };
 
+  useEffect(() => stopAutoUpdate, []);
+
   // ───────── Setta destinazione ─────────
   const handleSetDest = () => {
-    const lat = parseFloat(destInput.lat);
-    const lng = parseFloat(destInput.lng);
-    if (!isNaN(lat) && !isNaN(lng)) {
-      setDest({ lat, lng });
-      addLog(`▶ destinazione settata: ${lat.toFixed(5)},${lng.toFixed(5)}`);
+    const point = destinationFromInput();
+    if (!point) {
+      setStatus("Coordinate destinazione non valide.");
+      return;
     }
+    setDest(point);
+    setFollowGps(false);
+    addLog(`▶ destinazione settata: ${formatCoord(point.lat)},${formatCoord(point.lng)}`);
+  };
+
+  const centerOnGps = () => {
+    if (!pos || !leafletMap.current) {
+      setStatus("GPS non ancora disponibile.");
+      return;
+    }
+
+    setFollowGps(true);
+    leafletMap.current.setView([pos.lat, pos.lng], Math.max(leafletMap.current.getZoom(), 16), {
+      animate: false,
+    });
+  };
+
+  const clearRoute = () => {
+    routeAbortRef.current?.abort();
+    if (routeLayer.current && leafletMap.current) {
+      routeLayer.current.removeFrom(leafletMap.current);
+      routeLayer.current = null;
+    }
+    setDest(null);
     setDestInput({ lat: "", lng: "" });
+    setRouteSummary(null);
+    setStatus("Rotta cancellata.");
   };
 
   /* ─────────────── Capture photo (unchanged) ─────────────── */
@@ -381,18 +614,19 @@ export default function App() {
   /* ─────────────── Clear & Disconnect ─────────────── */
   const handleClear = async () => {
     if (!frame) return;
-      addLog("▶ clearFrame");
-      await frame.sendMessage(0x0a, new TxPlainText({ text: "" }).pack());
-      setStatus("Schermo pulito");
+    addLog("▶ clearFrame");
+    await frame.sendMessage(0x0a, new TxPlainText({ text: "" }).pack());
+    setStatus("Schermo pulito");
   };
 
   const handleDisconnect = async () => {
     if (!frame) return;
     try {
-        addLog("▶ disconnectFrame");
-        await frame.stopFrameApp();
-        await frame.disconnect();
-        setFrame(null);
+      addLog("▶ disconnectFrame");
+      stopAutoUpdate();
+      await frame.stopFrameApp();
+      await frame.disconnect();
+      setFrame(null);
       setStatus("Disconnesso");
     } catch (e: any) {
       setStatus("Errore disconnect: " + e.message);
@@ -458,23 +692,42 @@ export default function App() {
   };
 
   const btn = (st: any, dis = false) => ({ ...st, ...(dis ? styles.btnDisabled : {}) });
+  const destinationPoint = destinationFromInput();
+  const gpsLabel =
+    gpsStatus === "watching" && pos
+      ? `${formatCoord(pos.lat)}, ${formatCoord(pos.lng)}`
+      : gpsStatus === "checking"
+        ? "Ricerca GPS..."
+        : gpsError || "GPS non disponibile";
+  const routeLabel = (() => {
+    if (routeSummary) {
+      return `${formatDistance(routeSummary.distanceMeters)} / ${formatDuration(routeSummary.durationSeconds)}`;
+    }
+    if (isRouting) return "Calcolo rotta...";
+    if (dest && !pos) return "In attesa GPS";
+    if (dest) return "Rotta non disponibile";
+    return "Nessuna destinazione";
+  })();
+  const destLabel = dest
+    ? `${formatCoord(dest.lat)}, ${formatCoord(dest.lng)}`
+    : "Click sulla mappa o inserisci coordinate";
 
   return (
     <div style={styles.container}>
       <h1 style={styles.header}>Markino Solutions → Frame</h1>
 
       <div style={styles.controls}>
-        <button onClick={handleConnect} style={btn(styles.btnSecondary, !!frame)}>🔌Connetti & Carica</button>
-        <button onClick={handleDashboard} disabled={!frame} style={btn(styles.btnSecondary, !frame)}>📊 Dashboard</button>
-        <button onClick={handleCapture} disabled={!frame} style={btn(styles.btnPrimary, !frame)}>📸 Cattura Foto</button>
+        <button onClick={handleConnect} style={btn(styles.btnSecondary, !!frame)}>Connetti e carica</button>
+        <button onClick={handleDashboard} disabled={!frame} style={btn(styles.btnSecondary, !frame)}>Dashboard</button>
+        <button onClick={handleCapture} disabled={!frame} style={btn(styles.btnPrimary, !frame)}>Cattura foto</button>
         <button onClick={() => setShowMedia((v) => !v)} disabled={!photoUrl} style={btn(styles.btnSecondary, !photoUrl)}>
           {showMedia ? "Nascondi Media" : "Mostra Media"}
         </button>
-        <button onClick={handleClear} disabled={!frame} style={btn(styles.btnSecondary, !frame)}>🧹 Pulisci Schermo</button>
+        <button onClick={handleClear} disabled={!frame} style={btn(styles.btnSecondary, !frame)}>Pulisci schermo</button>
         <div style={{ marginBottom: 8 }}>
-          <button onClick={sendMapToFrame} disabled={!frame}>🗺️ Mostra Mappa</button>
-          <button onClick={startAutoUpdate}>▶ Auto</button>
-          <button onClick={stopAutoUpdate}>■ Stop</button>
+          <button onClick={sendMapToFrame} disabled={!frame} style={btn(styles.btnSmall, !frame)}>Invia mappa</button>
+          <button onClick={startAutoUpdate} disabled={!frame} style={btn(styles.btnSmall, !frame)}>Auto</button>
+          <button onClick={stopAutoUpdate} style={styles.btnSmall}>Stop</button>
         </div>
 
         <div style={{ marginBottom: 16, textAlign: "center" }}>
@@ -492,14 +745,50 @@ export default function App() {
             value={destInput.lng}
             onChange={(e) => setDestInput({ ...destInput, lng: e.target.value })}
           />
-          <button onClick={handleSetDest} style={btn(styles.btnPrimary, !frame)} disabled={!frame}>
-            📍 Avvia Navigazione
+          <button onClick={handleSetDest} style={btn(styles.btnPrimary, !destinationPoint)} disabled={!destinationPoint}>
+            Avvia navigazione
           </button>
         </div>
 
-        <button onClick={handleDisconnect} disabled={!frame} style={btn(styles.btnSecondary, !frame)}>🔌Disconnetti</button>
-        <button onClick={handleGenerateImage} disabled={!frame || !prompt} style={btn(styles.btnPrimary, !frame || !prompt)}>🎨 Genera Immagine</button>
+        <button onClick={handleDisconnect} disabled={!frame} style={btn(styles.btnSecondary, !frame)}>Disconnetti</button>
+        <button onClick={handleGenerateImage} disabled={!frame || !prompt} style={btn(styles.btnPrimary, !frame || !prompt)}>Genera immagine</button>
       </div>
+
+      <section style={styles.mapPanel}>
+        <div style={styles.mapStats}>
+          <div style={styles.statBox}>
+            <span style={styles.statLabel}>GPS</span>
+            <strong style={styles.statValue}>{gpsLabel}</strong>
+          </div>
+          <div style={styles.statBox}>
+            <span style={styles.statLabel}>Accuratezza</span>
+            <strong style={styles.statValue}>
+              {accuracy !== null ? `${Math.round(accuracy)} m` : "n/d"}
+            </strong>
+          </div>
+          <div style={styles.statBox}>
+            <span style={styles.statLabel}>Destinazione</span>
+            <strong style={styles.statValue}>{destLabel}</strong>
+          </div>
+          <div style={styles.statBox}>
+            <span style={styles.statLabel}>Rotta</span>
+            <strong style={styles.statValue}>{routeLabel}</strong>
+          </div>
+          <div style={styles.statBox}>
+            <span style={styles.statLabel}>Bussola</span>
+            <strong style={styles.statValue}>{Math.round(heading)}°</strong>
+          </div>
+        </div>
+        <div style={styles.mapActions}>
+          <button onClick={centerOnGps} disabled={!pos} style={btn(styles.btnSmall, !pos)}>Centra GPS</button>
+          <button onClick={() => setFollowGps((value) => !value)} style={styles.btnSmall}>
+            Follow GPS: {followGps ? "on" : "off"}
+          </button>
+          <button onClick={clearRoute} disabled={!dest} style={btn(styles.btnSmall, !dest)}>Cancella rotta</button>
+        </div>
+        <div ref={mapRef} style={styles.mapView} />
+        {gpsError && <div style={styles.inlineError}>{gpsError}</div>}
+      </section>
 
       {showMedia && photoUrl && (
         <div style={styles.imageWrapper}>
@@ -530,17 +819,6 @@ export default function App() {
         <b>Risposta Gemini:</b>
         <pre style={styles.responsePre}>{response}</pre>
       </div>
-      <div
-        ref={mapRef}
-        style={{
-          width: "100%",
-          height: 300,
-          borderRadius: 8,
-          overflow: "hidden",
-          marginBottom: 16,
-          boxShadow: "0 2px 6px rgba(0,0,0,.5)",
-        }}
-      />
     </div>
   );
 }
@@ -597,8 +875,69 @@ const styles: Record<string, React.CSSProperties> = {
     flex: 1,
     minWidth: 120,
   },
+  btnSmall: {
+    padding: "8px 10px",
+    backgroundColor: "#1f2937",
+    color: "#f3f4f6",
+    border: "1px solid #374151",
+    borderRadius: 6,
+    cursor: "pointer",
+    marginRight: 6,
+    marginBottom: 6,
+  },
   btnDisabled: { opacity: 0.5, cursor: "not-allowed" },
-  map: { width: "100%", height: 300, borderRadius: 6, marginBottom: 16 },
+  mapPanel: {
+    marginBottom: 16,
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: "#0f172a",
+    border: "1px solid #1f2937",
+  },
+  mapStats: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+    gap: 8,
+    marginBottom: 10,
+  },
+  statBox: {
+    minWidth: 0,
+    padding: 10,
+    borderRadius: 6,
+    backgroundColor: "#1f2937",
+  },
+  statLabel: {
+    display: "block",
+    marginBottom: 4,
+    color: "#9ca3af",
+    fontSize: 12,
+    fontWeight: 700,
+    textTransform: "uppercase",
+  },
+  statValue: {
+    display: "block",
+    color: "#f9fafb",
+    fontSize: 14,
+    overflowWrap: "anywhere",
+  },
+  mapActions: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: 4,
+    marginBottom: 10,
+  },
+  mapView: {
+    width: "100%",
+    height: 360,
+    borderRadius: 8,
+    overflow: "hidden",
+    backgroundColor: "#e5e7eb",
+    boxShadow: "0 2px 6px rgba(0,0,0,.35)",
+  },
+  inlineError: {
+    marginTop: 8,
+    color: "#fecaca",
+    fontSize: 13,
+  },
   status: { textAlign: "center", marginBottom: 8, color: "#9ca3af" },
   logs: {
     backgroundColor: "#1f2937",
