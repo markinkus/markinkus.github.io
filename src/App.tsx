@@ -33,6 +33,13 @@ type RouteSummary = {
   distanceMeters: number;
   durationSeconds: number;
 };
+type RouteVariant = "fallback" | "driving";
+type RouteOverlayState = {
+  points: string;
+  width: number;
+  height: number;
+  variant: RouteVariant;
+};
 type RouteStepInfo = {
   instruction: string;
   shortInstruction: string;
@@ -731,6 +738,8 @@ export default function App() {
   const [routeSummary, setRouteSummary] = useState<RouteSummary | null>(null);
   const [routeSteps, setRouteSteps] = useState<RouteStepInfo[]>([]);
   const [routePath, setRoutePath] = useState<LatLngPoint[]>([]);
+  const [routeVariant, setRouteVariant] = useState<RouteVariant>("fallback");
+  const [routeOverlay, setRouteOverlay] = useState<RouteOverlayState | null>(null);
   const [activeStepIndex, setActiveStepIndex] = useState(0);
   const [isRouting, setIsRouting] = useState(false);
   const [mapOrientation, setMapOrientation] = useState<MapOrientationMode>("route");
@@ -936,6 +945,7 @@ export default function App() {
       setRouteSummary(null);
       setRouteSteps([]);
       setRoutePath([]);
+      setRouteOverlay(null);
       setActiveStepIndex(0);
       setIsRouting(false);
       return;
@@ -958,6 +968,7 @@ export default function App() {
     setRouteSummary(null);
     setRouteSteps([]);
     setRoutePath([]);
+    setRouteOverlay(null);
     setActiveStepIndex(0);
     lastRouteKeyRef.current = routeKey;
 
@@ -972,7 +983,7 @@ export default function App() {
 
     const drawRouteLayers = (
       path: LatLngPoint[],
-      variant: "fallback" | "driving",
+      variant: RouteVariant,
     ) => {
       const renderer = routeRenderer.current ?? undefined;
       const latLngs = path.map((point) => [point.lat, point.lng] as [number, number]);
@@ -1020,6 +1031,7 @@ export default function App() {
         roadName: "",
       }]);
       setRoutePath([pos, dest]);
+      setRouteVariant("fallback");
       if (routeLayer.current) {
         map.fitBounds(routeLayer.current.getBounds().pad(0.18), { animate: false });
       }
@@ -1058,6 +1070,7 @@ export default function App() {
           });
           setRouteSteps(normalizeRouteSteps(route));
           setRoutePath(path);
+          setRouteVariant("driving");
 
           if (routeLayer.current) {
             map.fitBounds(routeLayer.current.getBounds().pad(0.18), {
@@ -1085,6 +1098,59 @@ export default function App() {
       controller.abort();
     };
   }, [dest, pos]);
+
+  useEffect(() => {
+    const map = leafletMap.current;
+    if (!map) {
+      setRouteOverlay(null);
+      return;
+    }
+
+    const path = routePath.length >= 2
+      ? routePath
+      : pos && dest
+        ? [pos, dest]
+        : [];
+
+    if (path.length < 2) {
+      setRouteOverlay(null);
+      return;
+    }
+
+    let raf = 0;
+    const updateOverlay = () => {
+      window.cancelAnimationFrame(raf);
+      raf = window.requestAnimationFrame(() => {
+        const size = map.getSize();
+        if (!size.x || !size.y) {
+          setRouteOverlay(null);
+          return;
+        }
+
+        const points = path
+          .map((point) => {
+            const projected = map.latLngToContainerPoint([point.lat, point.lng]);
+            return `${projected.x.toFixed(1)},${projected.y.toFixed(1)}`;
+          })
+          .join(" ");
+
+        setRouteOverlay({
+          points,
+          width: size.x,
+          height: size.y,
+          variant: routeVariant,
+        });
+      });
+    };
+
+    updateOverlay();
+    map.on("move zoom resize viewreset moveend zoomend", updateOverlay);
+
+    return () => {
+      window.cancelAnimationFrame(raf);
+      map.off("move zoom resize viewreset moveend zoomend", updateOverlay);
+    };
+  }, [activeTab, dest, pos, routePath, routeVariant, viewportWidth]);
 
   useEffect(() => {
     if (!pos || routeSteps.length === 0) return;
@@ -1440,6 +1506,7 @@ export default function App() {
     setRouteSummary(null);
     setRouteSteps([]);
     setRoutePath([]);
+    setRouteOverlay(null);
     setActiveStepIndex(0);
     setMapBearing(0);
     setStatus("Rotta cancellata.");
@@ -1721,6 +1788,8 @@ export default function App() {
     mapOrientation === "route" && dest
       ? `Rotta su ${Math.round(mapBearing)}°`
       : "Nord su";
+  const routeOverlayColor = routeOverlay?.variant === "driving" ? "#e11d48" : "#f59e0b";
+  const routeOverlayDash = routeOverlay?.variant === "fallback" ? "18 12" : undefined;
   const activeStep = routeSteps[activeStepIndex] || null;
   const activeStepLabel = activeStep
     ? activeStep.shortInstruction
@@ -1878,6 +1947,47 @@ export default function App() {
 
             <div ref={mapShellRef} style={styles.mapShell}>
               <div ref={mapRef} style={styles.mapView} />
+              {routeOverlay && (
+                <svg
+                  aria-hidden="true"
+                  viewBox={`0 0 ${routeOverlay.width} ${routeOverlay.height}`}
+                  preserveAspectRatio="none"
+                  style={{
+                    ...styles.routeOverlay,
+                    transform: mapOrientation === "route"
+                      ? `rotate(${-mapBearing}deg)`
+                      : "none",
+                  }}
+                >
+                  <polyline
+                    points={routeOverlay.points}
+                    fill="none"
+                    stroke="rgba(15, 23, 42, .42)"
+                    strokeWidth={routeOverlay.variant === "driving" ? 24 : 22}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeDasharray={routeOverlayDash}
+                  />
+                  <polyline
+                    points={routeOverlay.points}
+                    fill="none"
+                    stroke="#ffffff"
+                    strokeWidth={routeOverlay.variant === "driving" ? 18 : 16}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeDasharray={routeOverlayDash}
+                  />
+                  <polyline
+                    points={routeOverlay.points}
+                    fill="none"
+                    stroke={routeOverlayColor}
+                    strokeWidth={routeOverlay.variant === "driving" ? 10 : 9}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeDasharray={routeOverlayDash}
+                  />
+                </svg>
+              )}
               <div style={styles.mapHud}>
                 <div style={styles.mapHudKicker}>
                   {orientationLabel}
@@ -2342,6 +2452,18 @@ const styles: Record<string, React.CSSProperties> = {
   mapShell: {
     position: "relative",
     minWidth: 0,
+  },
+  routeOverlay: {
+    position: "absolute",
+    inset: 0,
+    zIndex: 760,
+    width: "100%",
+    height: "100%",
+    borderRadius: 8,
+    overflow: "visible",
+    pointerEvents: "none",
+    transformOrigin: "50% 50%",
+    transition: "transform 180ms linear",
   },
   mapHud: {
     position: "absolute",
