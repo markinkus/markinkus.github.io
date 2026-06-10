@@ -229,6 +229,318 @@ const isLikelyJpeg = (bytes: Uint8Array) =>
   bytes[bytes.length - 2] === 0xff &&
   bytes[bytes.length - 1] === 0xd9;
 
+const getViewportWidth = () => {
+  if (typeof window === "undefined") return 1180;
+  return Math.round(window.visualViewport?.width || window.innerWidth || 1180);
+};
+
+const useViewportWidth = () => {
+  const [viewportWidth, setViewportWidth] = useState(getViewportWidth);
+
+  useEffect(() => {
+    let raf = 0;
+    const update = () => {
+      window.cancelAnimationFrame(raf);
+      raf = window.requestAnimationFrame(() => setViewportWidth(getViewportWidth()));
+    };
+
+    window.addEventListener("resize", update);
+    window.visualViewport?.addEventListener("resize", update);
+    window.visualViewport?.addEventListener("scroll", update);
+
+    return () => {
+      window.cancelAnimationFrame(raf);
+      window.removeEventListener("resize", update);
+      window.visualViewport?.removeEventListener("resize", update);
+      window.visualViewport?.removeEventListener("scroll", update);
+    };
+  }, []);
+
+  return viewportWidth;
+};
+
+const buildResponsiveStyles = (viewportWidth: number): Record<string, React.CSSProperties> => {
+  const isMobile = viewportWidth <= 760;
+  const isTiny = viewportWidth <= 430;
+
+  if (!isMobile) return styles;
+
+  return {
+    ...styles,
+    shell: {
+      ...styles.shell,
+      minWidth: 0,
+      padding: isTiny ? 8 : 12,
+      overflowX: "hidden",
+    },
+    topBar: {
+      ...styles.topBar,
+      gap: 10,
+      flexWrap: "nowrap",
+      margin: "0 auto 10px",
+    },
+    brandGroup: {
+      ...styles.brandGroup,
+      minWidth: 0,
+      gap: 10,
+      flex: "1 1 auto",
+    },
+    logoMark: {
+      ...styles.logoMark,
+      width: isTiny ? 36 : 40,
+      height: isTiny ? 36 : 40,
+      flex: "0 0 auto",
+      fontSize: 13,
+    },
+    header: {
+      ...styles.header,
+      maxWidth: "100%",
+      fontSize: isTiny ? 18 : 21,
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      whiteSpace: "nowrap",
+    },
+    subHeader: {
+      ...styles.subHeader,
+      marginTop: 2,
+      fontSize: 11,
+    },
+    connectionPill: {
+      ...styles.connectionPill,
+      minWidth: 0,
+      flex: "0 0 auto",
+      padding: "7px 9px",
+      fontSize: 12,
+    },
+    tabBar: {
+      ...styles.tabBar,
+      margin: "0 -2px 10px",
+      position: "sticky",
+      top: 0,
+      zIndex: 50,
+      border: "1px solid #d7d0c2",
+      boxShadow: "0 4px 14px rgba(58, 48, 34, .12)",
+      scrollbarWidth: "none",
+    },
+    tabButton: {
+      ...styles.tabButton,
+      minWidth: isTiny ? 70 : 82,
+      flex: "0 0 auto",
+      padding: isTiny ? "9px 10px" : "10px 12px",
+      fontSize: 13,
+    },
+    appLayout: {
+      ...styles.appLayout,
+      gridTemplateColumns: "minmax(0, 1fr)",
+      gap: 10,
+    },
+    workspace: {
+      ...styles.workspace,
+      order: 2,
+    },
+    sidePanel: {
+      ...styles.sidePanel,
+      order: 1,
+      position: "static",
+      top: "auto",
+      gap: 10,
+    },
+    sideBlock: {
+      ...styles.sideBlock,
+      gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+      padding: 10,
+      boxShadow: "0 4px 16px rgba(47, 42, 69, .16)",
+    },
+    sideTitle: {
+      ...styles.sideTitle,
+      gridColumn: "1 / -1",
+    },
+    panel: {
+      ...styles.panel,
+      padding: isTiny ? 10 : 12,
+      boxShadow: "0 4px 18px rgba(58, 48, 34, .10)",
+    },
+    sectionHead: {
+      ...styles.sectionHead,
+      display: "grid",
+      gridTemplateColumns: "minmax(0, 1fr)",
+      gap: 10,
+      marginBottom: 12,
+    },
+    sectionTitle: {
+      ...styles.sectionTitle,
+      fontSize: isTiny ? 19 : 20,
+    },
+    sectionMeta: {
+      ...styles.sectionMeta,
+      fontSize: 12,
+      overflowWrap: "anywhere",
+    },
+    metricGrid: {
+      ...styles.metricGrid,
+      gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+      gap: 7,
+      marginBottom: 10,
+    },
+    metricBox: {
+      ...styles.metricBox,
+      padding: isTiny ? 8 : 9,
+    },
+    metricLabel: {
+      ...styles.metricLabel,
+      fontSize: 10,
+    },
+    metricValue: {
+      ...styles.metricValue,
+      fontSize: isTiny ? 12 : 13,
+      lineHeight: 1.25,
+    },
+    inlineControls: {
+      ...styles.inlineControls,
+      display: "grid",
+      gridTemplateColumns: isTiny ? "minmax(0, 1fr)" : "repeat(2, minmax(0, 1fr))",
+      alignItems: "stretch",
+      gap: 7,
+      marginBottom: 10,
+    },
+    compactField: {
+      ...styles.compactField,
+      width: "100%",
+      minWidth: 0,
+      boxSizing: "border-box",
+    },
+    primaryButton: {
+      ...styles.primaryButton,
+      width: "100%",
+      padding: "10px 12px",
+      whiteSpace: "normal",
+      lineHeight: 1.15,
+    },
+    secondaryButton: {
+      ...styles.secondaryButton,
+      width: "100%",
+      padding: "10px 12px",
+      whiteSpace: "normal",
+      lineHeight: 1.15,
+    },
+    ghostButton: {
+      ...styles.ghostButton,
+      width: "100%",
+      padding: "10px 12px",
+      whiteSpace: "normal",
+      lineHeight: 1.15,
+    },
+    dangerButton: {
+      ...styles.dangerButton,
+      width: "100%",
+      padding: "10px 12px",
+      whiteSpace: "normal",
+      lineHeight: 1.15,
+    },
+    navCard: {
+      ...styles.navCard,
+      marginBottom: 10,
+      padding: 10,
+    },
+    navInstruction: {
+      ...styles.navInstruction,
+      fontSize: isTiny ? 17 : 18,
+    },
+    directionsList: {
+      ...styles.directionsList,
+      maxHeight: isTiny ? 190 : 220,
+      marginBottom: 10,
+    },
+    directionItem: {
+      ...styles.directionItem,
+      gridTemplateColumns: isTiny ? "28px minmax(0, 1fr)" : "30px minmax(0, 1fr) auto",
+      minHeight: 42,
+      padding: "8px",
+      gap: 7,
+    },
+    directionIndex: {
+      ...styles.directionIndex,
+      width: 24,
+      height: 24,
+    },
+    directionText: {
+      ...styles.directionText,
+      fontSize: 13,
+      lineHeight: 1.25,
+    },
+    directionDistance: {
+      ...styles.directionDistance,
+      display: isTiny ? "none" : "block",
+    },
+    mapView: {
+      ...styles.mapView,
+      minHeight: isTiny ? 300 : 330,
+      height: "46svh",
+      maxHeight: 520,
+    },
+    formGrid: {
+      ...styles.formGrid,
+      gridTemplateColumns: "minmax(0, 1fr)",
+      gap: 9,
+    },
+    quickGrid: {
+      ...styles.quickGrid,
+      gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
+      gap: 7,
+    },
+    quickButton: {
+      ...styles.quickButton,
+      minHeight: 40,
+    },
+    paletteGrid: {
+      ...styles.paletteGrid,
+      gridTemplateColumns: "repeat(8, minmax(0, 1fr))",
+      gap: 7,
+    },
+    mediaGrid: {
+      ...styles.mediaGrid,
+      gridTemplateColumns: "minmax(0, 1fr)",
+      gap: 10,
+    },
+    uploadStrip: {
+      ...styles.uploadStrip,
+      display: "grid",
+      gridTemplateColumns: "minmax(0, 1fr)",
+      padding: 10,
+    },
+    previewBox: {
+      ...styles.previewBox,
+      minHeight: 210,
+      padding: 9,
+    },
+    previewImage: {
+      ...styles.previewImage,
+      maxHeight: "48svh",
+    },
+    emptyPreview: {
+      ...styles.emptyPreview,
+      minHeight: 170,
+    },
+    logs: {
+      ...styles.logs,
+      minHeight: 180,
+      maxHeight: "52svh",
+      fontSize: 12,
+    },
+    statusBox: {
+      ...styles.statusBox,
+      gridColumn: "1 / -1",
+      fontSize: 12,
+    },
+    responsePre: {
+      ...styles.responsePre,
+      fontSize: 12,
+      overflowX: "hidden",
+      wordBreak: "break-word",
+    },
+  };
+};
+
 async function fetchGemini(
   prompt: string,
   apiKey: string,
@@ -266,6 +578,7 @@ async function fetchGemini(
 
 export default function App() {
   // ───────── UI state ─────────
+  const viewportWidth = useViewportWidth();
   const [frame, setFrame] = useState<FrameMsg | null>(null);
   const [geminiApiKey, setGeminiApiKey] = useState(DEFAULT_GEMINI_API_KEY);
   const [pollinationsApiKey, setPollinationsApiKey] = useState(DEFAULT_POLLINATIONS_API_KEY);
@@ -1092,6 +1405,7 @@ export default function App() {
     setStatus("Dashboard inviata");
   };
 
+  const styles = buildResponsiveStyles(viewportWidth);
   const btn = (st: any, dis = false) => ({ ...st, ...(dis ? styles.btnDisabled : {}) });
   const destinationPoint = destinationFromInput();
   const gpsLabel =

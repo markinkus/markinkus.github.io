@@ -1,0 +1,43 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  overflow-x: hidden;
+  background: #f4f1e8;
+  color: #171717;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button,
+label,
+select,
+input[type="checkbox"],
+input[type="range"] {
+  touch-action: manipulation;
+}
+
+img,
+canvas,
+svg {
+  max-width: 100%;
+}
+
+.leaflet-container {
+  font: inherit;
+}
