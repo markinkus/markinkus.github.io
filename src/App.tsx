@@ -219,6 +219,10 @@ const destinationMarkerIcon = (mapBearing: number) =>
     `,
   });
 
+const removeLayer = (layer: L.Layer | null, map: L.Map) => {
+  if (layer) layer.removeFrom(map);
+};
+
 const modifierLabel = (modifier?: string) => {
   switch (modifier) {
     case "left": return "a sinistra";
@@ -735,6 +739,7 @@ export default function App() {
   const [dest, setDest] = useState<LatLngPoint | null>(null);
   const routeOutlineLayer = useRef<L.Polyline | null>(null);
   const routeLayer = useRef<L.Polyline | null>(null);
+  const routeRenderer = useRef<L.Renderer | null>(null);
   const userMarkerLayer = useRef<L.Marker | null>(null);
   const accuracyLayer = useRef<L.Circle | null>(null);
   const destinationMarkerLayer = useRef<L.Marker | null>(null);
@@ -823,6 +828,13 @@ export default function App() {
       }
     ).addTo(map);
     L.control.zoom({ position: "bottomright" }).addTo(map);
+    map.createPane("routePane");
+    const pane = map.getPane("routePane");
+    if (pane) {
+      pane.style.zIndex = "520";
+      pane.style.pointerEvents = "none";
+    }
+    routeRenderer.current = L.svg({ pane: "routePane" }).addTo(map);
 
     poiLayer.current = L.layerGroup().addTo(map);
     poiList.forEach(({ lat, lng, name }) => {
@@ -857,6 +869,7 @@ export default function App() {
       poiLayer.current = null;
       routeOutlineLayer.current = null;
       routeLayer.current = null;
+      routeRenderer.current = null;
       userMarkerLayer.current = null;
       accuracyLayer.current = null;
       destinationMarkerLayer.current = null;
@@ -913,14 +926,12 @@ export default function App() {
       routeAbortRef.current?.abort();
       lastRouteKeyRef.current = null;
 
-      if (routeLayer.current && map) {
-        routeLayer.current.removeFrom(map);
-        routeLayer.current = null;
+      if (map) {
+        removeLayer(routeLayer.current, map);
+        removeLayer(routeOutlineLayer.current, map);
       }
-      if (routeOutlineLayer.current && map) {
-        routeOutlineLayer.current.removeFrom(map);
-        routeOutlineLayer.current = null;
-      }
+      routeLayer.current = null;
+      routeOutlineLayer.current = null;
 
       setRouteSummary(null);
       setRouteSteps([]);
@@ -944,15 +955,6 @@ export default function App() {
 
     routeAbortRef.current?.abort();
 
-    if (routeLayer.current) {
-      routeLayer.current.removeFrom(map);
-      routeLayer.current = null;
-    }
-    if (routeOutlineLayer.current) {
-      routeOutlineLayer.current.removeFrom(map);
-      routeOutlineLayer.current = null;
-    }
-
     setRouteSummary(null);
     setRouteSteps([]);
     setRoutePath([]);
@@ -968,34 +970,46 @@ export default function App() {
       `${pos.lng},${pos.lat};${dest.lng},${dest.lat}` +
       `?overview=full&geometries=geojson&steps=true`;
 
-    const drawFallbackRoute = () => {
-      const distanceMeters = haversineMeters(pos, dest);
-      const durationSeconds = distanceMeters / 11;
-      const latLngs: [number, number][] = [
-        [pos.lat, pos.lng],
-        [dest.lat, dest.lng],
-      ];
+    const drawRouteLayers = (
+      path: LatLngPoint[],
+      variant: "fallback" | "driving",
+    ) => {
+      const renderer = routeRenderer.current ?? undefined;
+      const latLngs = path.map((point) => [point.lat, point.lng] as [number, number]);
 
+      removeLayer(routeLayer.current, map);
+      removeLayer(routeOutlineLayer.current, map);
       routeOutlineLayer.current = L.polyline(latLngs, {
         color: "#ffffff",
-        weight: 11,
-        opacity: 0.9,
-        dashArray: "10 10",
+        weight: variant === "fallback" ? 15 : 16,
+        opacity: 1,
+        dashArray: variant === "fallback" ? "12 10" : undefined,
         lineCap: "round",
         lineJoin: "round",
+        pane: "routePane",
+        renderer,
       }).addTo(map);
 
       routeLayer.current = L.polyline(latLngs, {
-        color: "#f59e0b",
-        weight: 7,
+        color: variant === "fallback" ? "#f59e0b" : "#0ea5e9",
+        weight: variant === "fallback" ? 9 : 10,
         opacity: 1,
-        dashArray: "10 10",
+        dashArray: variant === "fallback" ? "12 10" : undefined,
         lineCap: "round",
         lineJoin: "round",
+        pane: "routePane",
+        renderer,
       }).addTo(map);
 
       routeOutlineLayer.current.bringToFront();
       routeLayer.current.bringToFront();
+    };
+
+    const drawFallbackRoute = () => {
+      const distanceMeters = haversineMeters(pos, dest);
+      const durationSeconds = distanceMeters / 11;
+
+      drawRouteLayers([pos, dest], "fallback");
       setRouteSummary({ distanceMeters, durationSeconds });
       setRouteSteps([{
         instruction: "Procedi verso la destinazione",
@@ -1006,8 +1020,13 @@ export default function App() {
         roadName: "",
       }]);
       setRoutePath([pos, dest]);
-      map.fitBounds(routeLayer.current.getBounds().pad(0.18), { animate: false });
+      if (routeLayer.current) {
+        map.fitBounds(routeLayer.current.getBounds().pad(0.18), { animate: false });
+      }
+      addLog(`▶ linea provvisoria: ${formatDistance(distanceMeters)}`);
     };
+
+    drawFallbackRoute();
 
     const routeTimer = window.setTimeout(() => {
       fetch(url, { signal: controller.signal })
@@ -1030,25 +1049,8 @@ export default function App() {
           const path = coordinates.map(
             ([lng, lat]: [number, number]) => ({ lat, lng }),
           ) as LatLngPoint[];
-          const latLngs = path.map((point) => [point.lat, point.lng] as [number, number]);
 
-          routeOutlineLayer.current = L.polyline(latLngs, {
-            color: "#ffffff",
-            weight: 13,
-            opacity: 0.98,
-            lineCap: "round",
-            lineJoin: "round",
-          }).addTo(map);
-
-          routeLayer.current = L.polyline(latLngs, {
-            color: "#0f766e",
-            weight: 8,
-            opacity: 1,
-            lineCap: "round",
-            lineJoin: "round",
-          }).addTo(map);
-          routeOutlineLayer.current.bringToFront();
-          routeLayer.current.bringToFront();
+          drawRouteLayers(path, "driving");
 
           setRouteSummary({
             distanceMeters: route.distance,
@@ -1057,15 +1059,17 @@ export default function App() {
           setRouteSteps(normalizeRouteSteps(route));
           setRoutePath(path);
 
-          map.fitBounds(routeLayer.current.getBounds().pad(0.18), {
-            animate: false,
-          });
+          if (routeLayer.current) {
+            map.fitBounds(routeLayer.current.getBounds().pad(0.18), {
+              animate: false,
+            });
+          }
+          addLog(`✔ percorso OSRM: ${formatDistance(route.distance)}`);
+          setStatus("Percorso stradale disegnato.");
         })
         .catch((error) => {
           if (error instanceof DOMException && error.name === "AbortError") return;
-          lastRouteKeyRef.current = null;
           console.warn("OSRM error", error);
-          drawFallbackRoute();
           setStatus("OSRM non disponibile: linea diretta mostrata.");
         })
         .finally(() => {
@@ -1148,6 +1152,8 @@ export default function App() {
         fillOpacity: 1,
         opacity: 1,
         weight: 4,
+        pane: "routePane",
+        renderer: routeRenderer.current ?? undefined,
       }).addTo(map);
     } else {
       activeStepMarkerLayer.current.setLatLng(latLng);
