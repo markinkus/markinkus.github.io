@@ -16,6 +16,7 @@ data.parsers[IMAGE_SPRITE_BLOCK] = img_block.parse_image_sprite_block
 data.parsers[TEXT_SPRITE_BLOCK]  = txt_block.parse_text_sprite_block
 local CHAR_PER_LINE, LINES_PER_PAGE, LINE_HEIGHT = 25, 5, 60
 local wrapped, page = {}, 1
+local plain = { x = 1, y = 1, color = 'WHITE', spacing = 4, string = '' }
 local function wrap_text(s)
   local out = {}
   for i = 1, #s, CHAR_PER_LINE do
@@ -33,7 +34,12 @@ local function render_plain_paged()
   for i = 0, LINES_PER_PAGE - 1 do
     local line = wrapped[page + i]
     if not line then break end
-    frame.display.text(line, 1, i * LINE_HEIGHT + 1)
+    frame.display.text(
+      line,
+      plain.x or 1,
+      (plain.y or 1) + i * LINE_HEIGHT,
+      { color = plain.color or 'WHITE', spacing = plain.spacing or 4 }
+    )
   end
   frame.display.show()
 end
@@ -90,12 +96,17 @@ while true do
   local ok, err = pcall(function()
     if data.process_raw_items() > 0 then
       if data.app_data[PLAIN_TEXT_MSG] then
-        wrapped = wrap_text(data.app_data[PLAIN_TEXT_MSG].string or "")
+        plain = data.app_data[PLAIN_TEXT_MSG]
+        wrapped = wrap_text(plain.string or "")
         page    = 1
         render_plain_paged()
         data.app_data[PLAIN_TEXT_MSG] = nil
       end
       if data.app_data[CAPTURE_SETTINGS_MSG] then
+        for _ = 1, 12 do
+          camera.run_auto_exposure()
+          frame.sleep(0.1)
+        end
         camera.capture_and_send(data.app_data[CAPTURE_SETTINGS_MSG])
         data.app_data[CAPTURE_SETTINGS_MSG] = nil
       end
