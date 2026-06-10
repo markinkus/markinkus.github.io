@@ -41,6 +41,7 @@ type RouteStepInfo = {
   location: LatLngPoint;
   roadName: string;
 };
+type MapOrientationMode = "north" | "route";
 type ToolTab = "map" | "frame" | "camera" | "ai" | "logs";
 type FramePaletteColor = {
   index: number;
@@ -101,6 +102,19 @@ const parseCoordinate = (value: string) => {
 const isValidLatLng = (point: LatLngPoint) =>
   point.lat >= -90 && point.lat <= 90 && point.lng >= -180 && point.lng <= 180;
 
+const normalizeDegrees = (degrees: number) => ((degrees % 360) + 360) % 360;
+
+const bearingDegrees = (from: LatLngPoint, to: LatLngPoint) => {
+  const phi1 = from.lat * Math.PI / 180;
+  const phi2 = to.lat * Math.PI / 180;
+  const lambda1 = from.lng * Math.PI / 180;
+  const lambda2 = to.lng * Math.PI / 180;
+  const y = Math.sin(lambda2 - lambda1) * Math.cos(phi2);
+  const x = Math.cos(phi1) * Math.sin(phi2)
+    - Math.sin(phi1) * Math.cos(phi2) * Math.cos(lambda2 - lambda1);
+  return normalizeDegrees(Math.atan2(y, x) * 180 / Math.PI);
+};
+
 const haversineMeters = (from: LatLngPoint, to: LatLngPoint) => {
   const earthRadius = 6371e3;
   const phi1 = from.lat * Math.PI / 180;
@@ -111,6 +125,99 @@ const haversineMeters = (from: LatLngPoint, to: LatLngPoint) => {
     + Math.cos(phi1) * Math.cos(phi2) * Math.sin(deltaLambda / 2) ** 2;
   return earthRadius * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 };
+
+const routeLookAheadPoint = (
+  current: LatLngPoint | null,
+  path: LatLngPoint[],
+  fallback: LatLngPoint | null,
+  lookAheadMeters = 70,
+) => {
+  if (!current || path.length === 0) return fallback;
+
+  let closestIndex = 0;
+  let closestDistance = Number.POSITIVE_INFINITY;
+
+  path.forEach((point, index) => {
+    const distance = haversineMeters(current, point);
+    if (distance < closestDistance) {
+      closestDistance = distance;
+      closestIndex = index;
+    }
+  });
+
+  let walked = 0;
+  for (let i = closestIndex; i < path.length - 1; i += 1) {
+    walked += haversineMeters(path[i], path[i + 1]);
+    if (walked >= lookAheadMeters) return path[i + 1];
+  }
+
+  return path[path.length - 1] ?? fallback;
+};
+
+const applyMapRotation = (map: L.Map, bearing: number) => {
+  const mapPane = map.getPane("mapPane");
+  if (!mapPane) return;
+
+  const rotation = normalizeDegrees(bearing);
+  const size = map.getSize();
+  const panePosition = L.DomUtil.getPosition(mapPane) ?? L.point(0, 0);
+  const originX = size.x / 2 - panePosition.x;
+  const originY = size.y / 2 - panePosition.y;
+  const cleanTransform = (mapPane.style.transform || "")
+    .replace(/\s?rotate\([^)]*\)/g, "")
+    .trim();
+
+  mapPane.style.transformOrigin = `${originX}px ${originY}px`;
+  mapPane.style.transition = rotation ? "transform 180ms linear" : "";
+  mapPane.style.transform = rotation
+    ? `${cleanTransform} rotate(${-rotation}deg)`.trim()
+    : cleanTransform;
+};
+
+const userMarkerIcon = (heading: number, mapBearing: number) =>
+  L.divIcon({
+    className: "markino-user-marker",
+    iconSize: [44, 44],
+    iconAnchor: [22, 22],
+    html: `
+      <div style="
+        width:44px;height:44px;display:grid;place-items:center;position:relative;
+        transform:rotate(${normalizeDegrees(heading)}deg);
+      ">
+        <div style="
+          width:0;height:0;border-left:10px solid transparent;border-right:10px solid transparent;
+          border-bottom:26px solid #0f766e;filter:drop-shadow(0 2px 4px rgba(0,0,0,.35));
+          transform:translateY(-3px);
+        "></div>
+        <div style="
+          position:absolute;width:16px;height:16px;border-radius:999px;background:#f8fafc;
+          border:4px solid #0f766e;box-shadow:0 0 0 5px rgba(15,118,110,.2);
+          transform:rotate(${-normalizeDegrees(mapBearing)}deg);
+        "></div>
+      </div>
+    `,
+  });
+
+const destinationMarkerIcon = (mapBearing: number) =>
+  L.divIcon({
+    className: "markino-destination-marker",
+    iconSize: [38, 48],
+    iconAnchor: [19, 43],
+    html: `
+      <div style="
+        width:38px;height:48px;display:grid;place-items:start center;position:relative;
+        transform:rotate(${normalizeDegrees(mapBearing)}deg);
+      ">
+        <div style="
+          width:30px;height:30px;border-radius:18px 18px 18px 4px;background:#dc2626;
+          transform:rotate(-45deg);border:4px solid #fff;box-shadow:0 4px 10px rgba(0,0,0,.32);
+        "></div>
+        <div style="
+          position:absolute;top:10px;width:10px;height:10px;border-radius:999px;background:#fff;
+        "></div>
+      </div>
+    `,
+  });
 
 const modifierLabel = (modifier?: string) => {
   switch (modifier) {
@@ -478,6 +585,17 @@ const buildResponsiveStyles = (viewportWidth: number): Record<string, React.CSSP
       height: "46svh",
       maxHeight: 520,
     },
+    mapHud: {
+      ...styles.mapHud,
+      left: 8,
+      right: 8,
+      top: 8,
+      padding: isTiny ? 9 : 10,
+    },
+    mapHudInstruction: {
+      ...styles.mapHudInstruction,
+      fontSize: isTiny ? 14 : 15,
+    },
     formGrid: {
       ...styles.formGrid,
       gridTemplateColumns: "minmax(0, 1fr)",
@@ -608,16 +726,23 @@ export default function App() {
   const [followGps, setFollowGps] = useState(true);
   const [routeSummary, setRouteSummary] = useState<RouteSummary | null>(null);
   const [routeSteps, setRouteSteps] = useState<RouteStepInfo[]>([]);
+  const [routePath, setRoutePath] = useState<LatLngPoint[]>([]);
   const [activeStepIndex, setActiveStepIndex] = useState(0);
   const [isRouting, setIsRouting] = useState(false);
+  const [mapOrientation, setMapOrientation] = useState<MapOrientationMode>("route");
+  const [mapBearing, setMapBearing] = useState(0);
   const [destInput, setDestInput] = useState({ lat: "", lng: "" });
   const [dest, setDest] = useState<LatLngPoint | null>(null);
+  const routeOutlineLayer = useRef<L.Polyline | null>(null);
   const routeLayer = useRef<L.Polyline | null>(null);
-  const userMarkerLayer = useRef<L.CircleMarker | null>(null);
+  const userMarkerLayer = useRef<L.Marker | null>(null);
   const accuracyLayer = useRef<L.Circle | null>(null);
+  const destinationMarkerLayer = useRef<L.Marker | null>(null);
+  const activeStepMarkerLayer = useRef<L.CircleMarker | null>(null);
   const poiLayer = useRef<L.LayerGroup | null>(null);
 
   const mapRef = useRef<HTMLDivElement>(null);
+  const mapShellRef = useRef<HTMLDivElement>(null);
   const leafletMap = useRef<L.Map | null>(null);
   const autoUpdateRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const routeAbortRef = useRef<AbortController | null>(null);
@@ -683,7 +808,7 @@ export default function App() {
     const map = L.map(mapRef.current, {
       center: [DEFAULT_CENTER.lat, DEFAULT_CENTER.lng],
       zoom: 16,
-      zoomControl: true,
+      zoomControl: false,
       attributionControl: false,
       preferCanvas: true,
     });
@@ -697,6 +822,7 @@ export default function App() {
         attribution: "",
       }
     ).addTo(map);
+    L.control.zoom({ position: "bottomright" }).addTo(map);
 
     poiLayer.current = L.layerGroup().addTo(map);
     poiList.forEach(({ lat, lng, name }) => {
@@ -729,9 +855,12 @@ export default function App() {
       map.remove();
       leafletMap.current = null;
       poiLayer.current = null;
+      routeOutlineLayer.current = null;
       routeLayer.current = null;
       userMarkerLayer.current = null;
       accuracyLayer.current = null;
+      destinationMarkerLayer.current = null;
+      activeStepMarkerLayer.current = null;
     };
   }, []);
 
@@ -755,21 +884,22 @@ export default function App() {
     }
 
     if (!userMarkerLayer.current) {
-      userMarkerLayer.current = L.circleMarker(latLng, {
-        radius: 12,
-        weight: 3,
-        color: "#C80000",
-        fillColor: "#FFD600",
-        fillOpacity: 1,
+      userMarkerLayer.current = L.marker(latLng, {
+        icon: userMarkerIcon(heading, mapBearing),
+        interactive: false,
+        keyboard: false,
+        zIndexOffset: 1200,
       }).addTo(map);
     } else {
       userMarkerLayer.current.setLatLng(latLng);
+      userMarkerLayer.current.setIcon(userMarkerIcon(heading, mapBearing));
     }
+    userMarkerLayer.current.setZIndexOffset(1200);
 
     if (followGps) {
       map.setView(latLng, Math.max(map.getZoom(), 16), { animate: false });
     }
-  }, [accuracy, followGps, pos]);
+  }, [accuracy, followGps, heading, mapBearing, pos]);
 
   useEffect(() => {
     if (activeTab !== "map" || !leafletMap.current) return;
@@ -787,9 +917,14 @@ export default function App() {
         routeLayer.current.removeFrom(map);
         routeLayer.current = null;
       }
+      if (routeOutlineLayer.current && map) {
+        routeOutlineLayer.current.removeFrom(map);
+        routeOutlineLayer.current = null;
+      }
 
       setRouteSummary(null);
       setRouteSteps([]);
+      setRoutePath([]);
       setActiveStepIndex(0);
       setIsRouting(false);
       return;
@@ -813,9 +948,14 @@ export default function App() {
       routeLayer.current.removeFrom(map);
       routeLayer.current = null;
     }
+    if (routeOutlineLayer.current) {
+      routeOutlineLayer.current.removeFrom(map);
+      routeOutlineLayer.current = null;
+    }
 
     setRouteSummary(null);
     setRouteSteps([]);
+    setRoutePath([]);
     setActiveStepIndex(0);
     lastRouteKeyRef.current = routeKey;
 
@@ -827,6 +967,47 @@ export default function App() {
       `${OSRM_URL}/route/v1/driving/` +
       `${pos.lng},${pos.lat};${dest.lng},${dest.lat}` +
       `?overview=full&geometries=geojson&steps=true`;
+
+    const drawFallbackRoute = () => {
+      const distanceMeters = haversineMeters(pos, dest);
+      const durationSeconds = distanceMeters / 11;
+      const latLngs: [number, number][] = [
+        [pos.lat, pos.lng],
+        [dest.lat, dest.lng],
+      ];
+
+      routeOutlineLayer.current = L.polyline(latLngs, {
+        color: "#ffffff",
+        weight: 11,
+        opacity: 0.9,
+        dashArray: "10 10",
+        lineCap: "round",
+        lineJoin: "round",
+      }).addTo(map);
+
+      routeLayer.current = L.polyline(latLngs, {
+        color: "#f59e0b",
+        weight: 7,
+        opacity: 1,
+        dashArray: "10 10",
+        lineCap: "round",
+        lineJoin: "round",
+      }).addTo(map);
+
+      routeOutlineLayer.current.bringToFront();
+      routeLayer.current.bringToFront();
+      setRouteSummary({ distanceMeters, durationSeconds });
+      setRouteSteps([{
+        instruction: "Procedi verso la destinazione",
+        shortInstruction: `Procedi verso la destinazione (${formatDistance(distanceMeters)})`,
+        distanceMeters,
+        durationSeconds,
+        location: dest,
+        roadName: "",
+      }]);
+      setRoutePath([pos, dest]);
+      map.fitBounds(routeLayer.current.getBounds().pad(0.18), { animate: false });
+    };
 
     const routeTimer = window.setTimeout(() => {
       fetch(url, { signal: controller.signal })
@@ -846,21 +1027,35 @@ export default function App() {
             throw new Error("Nessuna rotta trovata.");
           }
 
-          const latLngs = coordinates.map(
-            ([lng, lat]: [number, number]) => [lat, lng] as [number, number],
-          );
+          const path = coordinates.map(
+            ([lng, lat]: [number, number]) => ({ lat, lng }),
+          ) as LatLngPoint[];
+          const latLngs = path.map((point) => [point.lat, point.lng] as [number, number]);
+
+          routeOutlineLayer.current = L.polyline(latLngs, {
+            color: "#ffffff",
+            weight: 13,
+            opacity: 0.98,
+            lineCap: "round",
+            lineJoin: "round",
+          }).addTo(map);
 
           routeLayer.current = L.polyline(latLngs, {
-            color: "#00C8FF",
+            color: "#0f766e",
             weight: 8,
-            opacity: 0.9,
+            opacity: 1,
+            lineCap: "round",
+            lineJoin: "round",
           }).addTo(map);
+          routeOutlineLayer.current.bringToFront();
+          routeLayer.current.bringToFront();
 
           setRouteSummary({
             distanceMeters: route.distance,
             durationSeconds: route.duration,
           });
           setRouteSteps(normalizeRouteSteps(route));
+          setRoutePath(path);
 
           map.fitBounds(routeLayer.current.getBounds().pad(0.18), {
             animate: false,
@@ -870,7 +1065,8 @@ export default function App() {
           if (error instanceof DOMException && error.name === "AbortError") return;
           lastRouteKeyRef.current = null;
           console.warn("OSRM error", error);
-          setStatus("Errore rotta GPS: " + (error?.message || String(error)));
+          drawFallbackRoute();
+          setStatus("OSRM non disponibile: linea diretta mostrata.");
         })
         .finally(() => {
           if (!controller.signal.aborted) {
@@ -908,10 +1104,92 @@ export default function App() {
     });
   }, [pos, routeSteps]);
 
+  useEffect(() => {
+    const map = leafletMap.current;
+    if (!map) return;
+
+    if (!dest) {
+      destinationMarkerLayer.current?.removeFrom(map);
+      destinationMarkerLayer.current = null;
+      return;
+    }
+
+    const latLng = L.latLng(dest.lat, dest.lng);
+    if (!destinationMarkerLayer.current) {
+      destinationMarkerLayer.current = L.marker(latLng, {
+        icon: destinationMarkerIcon(mapBearing),
+        zIndexOffset: 1100,
+      }).addTo(map);
+      destinationMarkerLayer.current.bindTooltip("Destinazione");
+    } else {
+      destinationMarkerLayer.current.setLatLng(latLng);
+      destinationMarkerLayer.current.setIcon(destinationMarkerIcon(mapBearing));
+    }
+    destinationMarkerLayer.current.setZIndexOffset(1100);
+  }, [dest, mapBearing]);
+
+  useEffect(() => {
+    const map = leafletMap.current;
+    if (!map) return;
+
+    const step = routeSteps[activeStepIndex];
+    if (!step) {
+      activeStepMarkerLayer.current?.removeFrom(map);
+      activeStepMarkerLayer.current = null;
+      return;
+    }
+
+    const latLng = L.latLng(step.location.lat, step.location.lng);
+    if (!activeStepMarkerLayer.current) {
+      activeStepMarkerLayer.current = L.circleMarker(latLng, {
+        radius: 9,
+        color: "#ffffff",
+        fillColor: "#f59e0b",
+        fillOpacity: 1,
+        opacity: 1,
+        weight: 4,
+      }).addTo(map);
+    } else {
+      activeStepMarkerLayer.current.setLatLng(latLng);
+    }
+
+    activeStepMarkerLayer.current
+      .bindTooltip(step.instruction)
+      .bringToFront();
+    routeOutlineLayer.current?.bringToFront();
+    routeLayer.current?.bringToFront();
+    activeStepMarkerLayer.current.bringToFront();
+  }, [activeStepIndex, routeSteps]);
+
+  useEffect(() => {
+    const activeStep = routeSteps[activeStepIndex] || null;
+    const fallbackTarget = activeStep?.location ?? dest;
+    const target = routeLookAheadPoint(pos, routePath, fallbackTarget);
+    const nextBearing =
+      mapOrientation === "route" && pos && target
+        ? bearingDegrees(pos, target)
+        : 0;
+
+    setMapBearing(nextBearing);
+  }, [activeStepIndex, dest, mapOrientation, pos, routePath, routeSteps]);
+
+  useEffect(() => {
+    const map = leafletMap.current;
+    if (!map) return;
+
+    const syncRotation = () => applyMapRotation(map, mapBearing);
+    syncRotation();
+    map.on("move zoom resize viewreset", syncRotation);
+
+    return () => {
+      map.off("move zoom resize viewreset", syncRotation);
+    };
+  }, [mapBearing]);
+
   const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
 
   const mapToCanvas = async () => {
-    if (!mapRef.current || !leafletMap.current) {
+    if (!mapRef.current || !mapShellRef.current || !leafletMap.current) {
       throw new Error("Mappa non inizializzata.");
     }
 
@@ -919,19 +1197,19 @@ export default function App() {
     await sleep(250);
 
     try {
+      return await html2canvas(mapShellRef.current, {
+        useCORS: true,
+        allowTaint: false,
+        backgroundColor: "#f8fafc",
+        scale: 2,
+      });
+    } catch (error) {
+      console.warn("html2canvas map fallback", error);
       return await new Promise<HTMLCanvasElement>((resolve, reject) => {
         leafletImage(leafletMap.current!, (err, canvas) => {
           if (err) reject(err);
           else resolve(canvas);
         });
-      });
-    } catch (error) {
-      console.warn("leaflet-image fallback", error);
-      return html2canvas(mapRef.current, {
-        useCORS: true,
-        allowTaint: false,
-        backgroundColor: "#f8fafc",
-        scale: 2,
       });
     }
   };
@@ -1139,15 +1417,25 @@ export default function App() {
 
   const clearRoute = () => {
     routeAbortRef.current?.abort();
+    if (routeOutlineLayer.current && leafletMap.current) {
+      routeOutlineLayer.current.removeFrom(leafletMap.current);
+      routeOutlineLayer.current = null;
+    }
     if (routeLayer.current && leafletMap.current) {
       routeLayer.current.removeFrom(leafletMap.current);
       routeLayer.current = null;
+    }
+    if (activeStepMarkerLayer.current && leafletMap.current) {
+      activeStepMarkerLayer.current.removeFrom(leafletMap.current);
+      activeStepMarkerLayer.current = null;
     }
     setDest(null);
     setDestInput({ lat: "", lng: "" });
     setRouteSummary(null);
     setRouteSteps([]);
+    setRoutePath([]);
     setActiveStepIndex(0);
+    setMapBearing(0);
     setStatus("Rotta cancellata.");
   };
 
@@ -1423,6 +1711,10 @@ export default function App() {
     if (dest) return "Rotta non disponibile";
     return "Nessuna destinazione";
   })();
+  const orientationLabel =
+    mapOrientation === "route" && dest
+      ? `Rotta su ${Math.round(mapBearing)}°`
+      : "Nord su";
   const activeStep = routeSteps[activeStepIndex] || null;
   const activeStepLabel = activeStep
     ? activeStep.shortInstruction
@@ -1508,6 +1800,10 @@ export default function App() {
                 <span style={styles.metricLabel}>Rotta</span>
                 <strong style={styles.metricValue}>{routeLabel}</strong>
               </div>
+              <div style={styles.metricBox}>
+                <span style={styles.metricLabel}>Orientamento</span>
+                <strong style={styles.metricValue}>{orientationLabel}</strong>
+              </div>
             </div>
 
             <div style={styles.inlineControls}>
@@ -1531,6 +1827,13 @@ export default function App() {
               <button onClick={centerOnGps} disabled={!pos} style={btn(styles.ghostButton, !pos)}>Centra GPS</button>
               <button onClick={() => setFollowGps((value) => !value)} style={styles.ghostButton}>
                 Follow {followGps ? "on" : "off"}
+              </button>
+              <button
+                onClick={() => setMapOrientation((value) => value === "route" ? "north" : "route")}
+                disabled={!dest}
+                style={btn(styles.ghostButton, !dest)}
+              >
+                {mapOrientation === "route" ? "Rotta su" : "Nord su"}
               </button>
               <button onClick={sendNavigationStep} disabled={!frame || !activeStep} style={btn(styles.ghostButton, !frame || !activeStep)}>
                 Invia indicazione
@@ -1567,7 +1870,23 @@ export default function App() {
               </div>
             )}
 
-            <div ref={mapRef} style={styles.mapView} />
+            <div ref={mapShellRef} style={styles.mapShell}>
+              <div ref={mapRef} style={styles.mapView} />
+              <div style={styles.mapHud}>
+                <div style={styles.mapHudKicker}>
+                  {orientationLabel}
+                  {routeSummary ? ` · ${routeLabel}` : ""}
+                </div>
+                <div style={styles.mapHudInstruction}>{activeStepLabel}</div>
+                <div style={styles.mapHudMeta}>
+                  {activeStep
+                    ? `${formatDistance(activeStep.distanceMeters)} prima del prossimo step`
+                    : dest
+                      ? "Attendo GPS/OSRM per disegnare percorso e indicazioni"
+                      : "Tocca la mappa o inserisci una destinazione"}
+                </div>
+              </div>
+            </div>
             {gpsError && <div style={styles.inlineError}>{gpsError}</div>}
           </section>
 
@@ -2012,6 +2331,43 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: "hidden",
     backgroundColor: "#e5e7eb",
     border: "1px solid #cfc7ba",
+    touchAction: "pan-x pan-y",
+  },
+  mapShell: {
+    position: "relative",
+    minWidth: 0,
+  },
+  mapHud: {
+    position: "absolute",
+    top: 12,
+    left: 12,
+    right: 12,
+    zIndex: 900,
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: "rgba(34, 31, 47, .92)",
+    color: "#f8fafc",
+    boxShadow: "0 8px 24px rgba(0, 0, 0, .22)",
+    pointerEvents: "none",
+  },
+  mapHudKicker: {
+    marginBottom: 5,
+    color: "#bae6fd",
+    fontSize: 11,
+    fontWeight: 900,
+    textTransform: "uppercase",
+  },
+  mapHudInstruction: {
+    fontSize: 17,
+    fontWeight: 900,
+    lineHeight: 1.22,
+    overflowWrap: "anywhere",
+  },
+  mapHudMeta: {
+    marginTop: 5,
+    color: "#e5e7eb",
+    fontSize: 12,
+    fontWeight: 800,
   },
   navCard: {
     marginBottom: 12,
