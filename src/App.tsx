@@ -26,6 +26,13 @@ const POLLINATIONS_MODEL = import.meta.env.VITE_POLLINATIONS_MODEL?.trim() || "s
 const OSRM_URL = "https://router.project-osrm.org";
 const DEFAULT_CENTER = { lat: 40.8362, lng: 16.5936 };
 const ROUTE_DEBOUNCE_MS = 700;
+const NAVIGATION_ZOOM = 19;
+const AUTO_MAP_INTERVAL_MS = 12000;
+const MAP_SEND_COOLDOWN_MS = 3500;
+const FRAME_MAP_WIDTH = 640;
+const FRAME_MAP_HEIGHT = 400;
+const FRAME_MAP_JPEG_QUALITY = 0.58;
+const FRAME_MAP_SPRITE_BUDGET = 24000;
 
 type LatLngPoint = { lat: number; lng: number };
 type GpsStatus = "checking" | "watching" | "unavailable" | "denied" | "error";
@@ -122,6 +129,25 @@ const bearingDegrees = (from: LatLngPoint, to: LatLngPoint) => {
   return normalizeDegrees(Math.atan2(y, x) * 180 / Math.PI);
 };
 
+const rotatePoint = (point: L.Point, center: L.Point, degrees: number) => {
+  if (!degrees) return point;
+  const radians = degrees * Math.PI / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  const dx = point.x - center.x;
+  const dy = point.y - center.y;
+
+  return L.point(
+    center.x + dx * cos - dy * sin,
+    center.y + dx * sin + dy * cos,
+  );
+};
+
+const interpolatePoint = (from: LatLngPoint, to: LatLngPoint, amount: number) => ({
+  lat: from.lat + (to.lat - from.lat) * amount,
+  lng: from.lng + (to.lng - from.lng) * amount,
+});
+
 const haversineMeters = (from: LatLngPoint, to: LatLngPoint) => {
   const earthRadius = 6371e3;
   const phi1 = from.lat * Math.PI / 180;
@@ -154,11 +180,31 @@ const routeLookAheadPoint = (
 
   let walked = 0;
   for (let i = closestIndex; i < path.length - 1; i += 1) {
-    walked += haversineMeters(path[i], path[i + 1]);
-    if (walked >= lookAheadMeters) return path[i + 1];
+    const segmentMeters = haversineMeters(path[i], path[i + 1]);
+    if (walked + segmentMeters >= lookAheadMeters) {
+      const remainingMeters = Math.max(0, lookAheadMeters - walked);
+      const segmentAmount = segmentMeters > 0 ? remainingMeters / segmentMeters : 0;
+      return interpolatePoint(path[i], path[i + 1], segmentAmount);
+    }
+    walked += segmentMeters;
   }
 
   return path[path.length - 1] ?? fallback;
+};
+
+const routePathWithAnchors = (
+  current: LatLngPoint,
+  destination: LatLngPoint,
+  path: LatLngPoint[],
+) => {
+  const anchored = path.length > 0 ? [...path] : [current, destination];
+  const first = anchored[0];
+  const last = anchored[anchored.length - 1];
+
+  if (!first || haversineMeters(current, first) > 3) anchored.unshift(current);
+  if (!last || haversineMeters(destination, last) > 3) anchored.push(destination);
+
+  return anchored;
 };
 
 const applyMapRotation = (map: L.Map, bearing: number) => {
@@ -170,15 +216,32 @@ const applyMapRotation = (map: L.Map, bearing: number) => {
   const panePosition = L.DomUtil.getPosition(mapPane) ?? L.point(0, 0);
   const originX = size.x / 2 - panePosition.x;
   const originY = size.y / 2 - panePosition.y;
-  const cleanTransform = (mapPane.style.transform || "")
+
+  const cleanMapTransform = (mapPane.style.transform || "")
     .replace(/\s?rotate\([^)]*\)/g, "")
     .trim();
+  mapPane.style.transformOrigin = "";
+  mapPane.style.transition = "";
+  mapPane.style.transform = cleanMapTransform;
 
-  mapPane.style.transformOrigin = `${originX}px ${originY}px`;
-  mapPane.style.transition = rotation ? "transform 180ms linear" : "";
-  mapPane.style.transform = rotation
-    ? `${cleanTransform} rotate(${-rotation}deg)`.trim()
-    : cleanTransform;
+  const paneNames = [
+    "tilePane",
+    "overlayPane",
+    "shadowPane",
+    "markerPane",
+    "tooltipPane",
+    "popupPane",
+    "routePane",
+  ];
+
+  paneNames.forEach((name) => {
+    const pane = map.getPane(name);
+    if (!pane) return;
+
+    pane.style.transformOrigin = `${originX}px ${originY}px`;
+    pane.style.transition = rotation ? "transform 180ms linear" : "";
+    pane.style.transform = rotation ? `rotate(${-rotation}deg)` : "";
+  });
 };
 
 const userMarkerIcon = (heading: number, mapBearing: number) =>
@@ -761,6 +824,9 @@ export default function App() {
   const autoUpdateRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const routeAbortRef = useRef<AbortController | null>(null);
   const lastRouteKeyRef = useRef<string | null>(null);
+  const isSendingMapRef = useRef(false);
+  const lastMapSendAtRef = useRef(0);
+  const mapSendCountRef = useRef(0);
 
   const poiList = [
     { name: "Bar", lat: 40.8367, lng: 16.5931 },
@@ -822,6 +888,11 @@ export default function App() {
     const map = L.map(mapRef.current, {
       center: [DEFAULT_CENTER.lat, DEFAULT_CENTER.lng],
       zoom: 16,
+      minZoom: 4,
+      maxZoom: 21,
+      zoomSnap: 0.25,
+      zoomDelta: 0.75,
+      wheelPxPerZoomLevel: 90,
       zoomControl: false,
       attributionControl: false,
       preferCanvas: true,
@@ -834,6 +905,8 @@ export default function App() {
         subdomains: "abcd",
         crossOrigin: "anonymous",
         attribution: "",
+        maxZoom: 21,
+        maxNativeZoom: 20,
       }
     ).addTo(map);
     L.control.zoom({ position: "bottomright" }).addTo(map);
@@ -1058,9 +1131,9 @@ export default function App() {
             throw new Error("Nessuna rotta trovata.");
           }
 
-          const path = coordinates.map(
+          const path = routePathWithAnchors(pos, dest, coordinates.map(
             ([lng, lat]: [number, number]) => ({ lat, lng }),
-          ) as LatLngPoint[];
+          ) as LatLngPoint[]);
 
           drawRouteLayers(path, "driving");
 
@@ -1127,10 +1200,14 @@ export default function App() {
           return;
         }
 
+        const center = L.point(size.x / 2, size.y / 2);
+        const visualRotation =
+          mapOrientation === "route" ? -normalizeDegrees(mapBearing) : 0;
         const points = path
           .map((point) => {
             const projected = map.latLngToContainerPoint([point.lat, point.lng]);
-            return `${projected.x.toFixed(1)},${projected.y.toFixed(1)}`;
+            const visualPoint = rotatePoint(projected, center, visualRotation);
+            return `${visualPoint.x.toFixed(1)},${visualPoint.y.toFixed(1)}`;
           })
           .join(" ");
 
@@ -1150,7 +1227,7 @@ export default function App() {
       window.cancelAnimationFrame(raf);
       map.off("move zoom resize viewreset moveend zoomend", updateOverlay);
     };
-  }, [activeTab, dest, pos, routePath, routeVariant, viewportWidth]);
+  }, [activeTab, dest, mapBearing, mapOrientation, pos, routePath, routeVariant, viewportWidth]);
 
   useEffect(() => {
     if (!pos || routeSteps.length === 0) return;
@@ -1286,6 +1363,32 @@ export default function App() {
     }
   };
 
+  const mapCanvasToFrameJpeg = async (source: HTMLCanvasElement) => {
+    const output = document.createElement("canvas");
+    output.width = FRAME_MAP_WIDTH;
+    output.height = FRAME_MAP_HEIGHT;
+    const ctx = output.getContext("2d");
+    if (!ctx) throw new Error("Canvas 2D non disponibile.");
+
+    ctx.fillStyle = "#f8fafc";
+    ctx.fillRect(0, 0, output.width, output.height);
+
+    const scale = Math.min(output.width / source.width, output.height / source.height);
+    const drawWidth = Math.max(1, Math.round(source.width * scale));
+    const drawHeight = Math.max(1, Math.round(source.height * scale));
+    const dx = Math.round((output.width - drawWidth) / 2);
+    const dy = Math.round((output.height - drawHeight) / 2);
+    ctx.drawImage(source, dx, dy, drawWidth, drawHeight);
+
+    return new Promise<Blob>((resolve, reject) =>
+      output.toBlob(
+        (blob) => blob ? resolve(blob) : reject(new Error("toBlob mappa fallito")),
+        "image/jpeg",
+        FRAME_MAP_JPEG_QUALITY,
+      ),
+    );
+  };
+
   const appendQuickText = (value: string) => {
     setFrameText((current) => {
       const spacer = current.trim() ? " " : "";
@@ -1416,24 +1519,36 @@ export default function App() {
       setStatus("Errore: init mappa o frame");
       return;
     }
+    if (isSendingMapRef.current) {
+      setStatus("Mappa già in invio, salto questo update.");
+      return;
+    }
+    const now = Date.now();
+    if (now - lastMapSendAtRef.current < MAP_SEND_COOLDOWN_MS) {
+      setStatus("Troppi update mappa ravvicinati, attendo un attimo.");
+      return;
+    }
+
+    isSendingMapRef.current = true;
+    lastMapSendAtRef.current = now;
     setStatus("📸 Snap mappa…");
     addLog("▶ sendMapToFrame");
 
     try {
       const canvas = await mapToCanvas();
-
-      const blob: Blob = await new Promise((res, rej) =>
-        canvas.toBlob(b => b ? res(b) : rej("toBlob fallito"), "image/jpeg", 0.9)
-      );
+      const blob = await mapCanvasToFrameJpeg(canvas);
       const arr = await blob.arrayBuffer();
-      const sprite = await TxSprite.fromImageBytes(arr, 36000);
+      const sprite = await TxSprite.fromImageBytes(arr, FRAME_MAP_SPRITE_BUDGET);
 
       await frame.sendMessage(0x20, sprite.pack());
-      addLog("✔ mappa inviata");
-      setStatus("Mappa mostrata!");
+      mapSendCountRef.current += 1;
+      addLog(`✔ mappa inviata ${Math.round(arr.byteLength / 1024)}KB #${mapSendCountRef.current}`);
+      setStatus("Mappa mostrata. Auto update limitato per non saturare memoria Frame.");
     } catch (e: any) {
       addLog("✖ map error: " + e);
       setStatus("Errore mappa");
+    } finally {
+      isSendingMapRef.current = false;
     }
   };
 
@@ -1449,7 +1564,10 @@ export default function App() {
     }
     if (autoUpdateRef.current) return;
     void sendMapToFrame();
-    autoUpdateRef.current = setInterval(sendMapToFrame, 5000);
+    autoUpdateRef.current = setInterval(() => {
+      if (document.hidden) return;
+      void sendMapToFrame();
+    }, AUTO_MAP_INTERVAL_MS);
     addLog("▶ Auto‐update ON");
   };
 
@@ -1485,6 +1603,51 @@ export default function App() {
     leafletMap.current.setView([pos.lat, pos.lng], Math.max(leafletMap.current.getZoom(), 16), {
       animate: false,
     });
+  };
+
+  const getNavigationCenter = () => pos;
+
+  const zoomMap = (delta: number) => {
+    if (!leafletMap.current) return;
+    const map = leafletMap.current;
+    const nextZoom = Math.max(
+      map.getMinZoom(),
+      Math.min(map.getMaxZoom(), map.getZoom() + delta),
+    );
+    const center = followGps ? getNavigationCenter() : null;
+    map.setView(center ? [center.lat, center.lng] : map.getCenter(), nextZoom, { animate: false });
+    window.setTimeout(() => map.invalidateSize(), 0);
+  };
+
+  const fitRouteView = () => {
+    if (!leafletMap.current) return;
+    const map = leafletMap.current;
+    if (routeLayer.current) {
+      map.fitBounds(routeLayer.current.getBounds().pad(0.12), { animate: false });
+      return;
+    }
+    if (pos && dest) {
+      map.fitBounds(L.latLngBounds([[pos.lat, pos.lng], [dest.lat, dest.lng]]).pad(0.16), {
+        animate: false,
+      });
+      return;
+    }
+    centerOnGps();
+  };
+
+  const focusNavigationView = () => {
+    if (!pos || !leafletMap.current) {
+      setStatus("GPS non ancora disponibile.");
+      return;
+    }
+
+    const map = leafletMap.current;
+    const center = getNavigationCenter() ?? pos;
+    setFollowGps(true);
+    map.setView([center.lat, center.lng], Math.max(map.getZoom(), NAVIGATION_ZOOM), {
+      animate: false,
+    });
+    window.setTimeout(() => map.invalidateSize(), 0);
   };
 
   const clearRoute = () => {
@@ -1900,6 +2063,14 @@ export default function App() {
                 Avvia rotta
               </button>
               <button onClick={centerOnGps} disabled={!pos} style={btn(styles.ghostButton, !pos)}>Centra GPS</button>
+              <button onClick={focusNavigationView} disabled={!pos} style={btn(styles.ghostButton, !pos)}>
+                Vista guida
+              </button>
+              <button onClick={() => zoomMap(1)} style={styles.ghostButton}>Zoom +</button>
+              <button onClick={() => zoomMap(-1)} style={styles.ghostButton}>Zoom -</button>
+              <button onClick={fitRouteView} disabled={!pos && !dest} style={btn(styles.ghostButton, !pos && !dest)}>
+                Fit rotta
+              </button>
               <button onClick={() => setFollowGps((value) => !value)} style={styles.ghostButton}>
                 Follow {followGps ? "on" : "off"}
               </button>
@@ -1952,12 +2123,7 @@ export default function App() {
                   aria-hidden="true"
                   viewBox={`0 0 ${routeOverlay.width} ${routeOverlay.height}`}
                   preserveAspectRatio="none"
-                  style={{
-                    ...styles.routeOverlay,
-                    transform: mapOrientation === "route"
-                      ? `rotate(${-mapBearing}deg)`
-                      : "none",
-                  }}
+                  style={styles.routeOverlay}
                 >
                   <polyline
                     points={routeOverlay.points}
@@ -2460,7 +2626,7 @@ const styles: Record<string, React.CSSProperties> = {
     width: "100%",
     height: "100%",
     borderRadius: 8,
-    overflow: "visible",
+    overflow: "hidden",
     pointerEvents: "none",
     transformOrigin: "50% 50%",
     transition: "transform 180ms linear",

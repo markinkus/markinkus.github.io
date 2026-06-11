@@ -17,6 +17,10 @@ data.parsers[TEXT_SPRITE_BLOCK]  = txt_block.parse_text_sprite_block
 local CHAR_PER_LINE, LINES_PER_PAGE, LINE_HEIGHT = 25, 5, 60
 local wrapped, page = {}, 1
 local plain = { x = 1, y = 1, color = 'WHITE', spacing = 4, string = '' }
+local function force_gc()
+  collectgarbage("collect")
+  collectgarbage("collect")
+end
 local function wrap_text(s)
   local out = {}
   for i = 1, #s, CHAR_PER_LINE do
@@ -50,12 +54,15 @@ local function on_tap()
 end
 frame.imu.tap_callback(on_tap)
 local function render_sprite(spr)
+  force_gc()
   sprite.set_palette(spr.num_colors, spr.palette_data)
   frame.display.bitmap(1, 1, spr.width, 2 ^ spr.bpp, 0, spr.pixel_data)
   frame.display.show()
+  force_gc()
 end
 local function render_image_block(isb)
   if isb.current_sprite_index == 0 then return end
+  force_gc()
   for idx = 1, isb.active_sprites do
     local spr = isb.sprites[idx]
     local y   = isb.sprite_line_height * (idx - 1)
@@ -70,6 +77,7 @@ local function render_image_block(isb)
     end
   end
   frame.display.show()
+  force_gc()
 end
 local function render_text_block(tsb)
   if tsb.first_sprite_index == 0 then return end
@@ -113,12 +121,12 @@ while true do
       if data.app_data[IMAGE_SPRITE_MSG] then
         render_sprite(data.app_data[IMAGE_SPRITE_MSG])
         data.app_data[IMAGE_SPRITE_MSG] = nil
-        collectgarbage()
+        force_gc()
       end
       if data.app_data[IMAGE_SPRITE_BLOCK] then
         render_image_block(data.app_data[IMAGE_SPRITE_BLOCK])
         data.app_data[IMAGE_SPRITE_BLOCK] = nil
-        collectgarbage()
+        force_gc()
       end
       if data.app_data[TEXT_SPRITE_BLOCK] then
         local tsb = data.app_data[TEXT_SPRITE_BLOCK]
@@ -128,7 +136,7 @@ while true do
           clear_display()
           render_text_block(tsb)
           data.app_data[TEXT_SPRITE_BLOCK] = nil
-          collectgarbage()
+          force_gc()
         end
       end
     end
