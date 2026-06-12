@@ -4,9 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "npm run lua:minify && vite",
+    "lua:minify": "node scripts/minify-lua.mjs",
     "check": "tsc --noEmit",
-    "build": "npm run check && vite build",
+    "build": "npm run lua:minify && npm run check && vite build",
     "preview": "vite preview"
   },
   "dependencies": {

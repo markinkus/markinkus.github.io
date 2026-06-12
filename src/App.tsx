@@ -8,7 +8,7 @@ import {
   RxPhoto,
 } from "frame-msg";
 import type { JpegQuality } from "frame-msg";
-import markinoFrameApp from "../lua/markino_frame_app.lua?raw";
+import markinoFrameApp from "../lua/markino_frame_app.min.lua?raw";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import html2canvas from "html2canvas";
@@ -45,10 +45,15 @@ const FRAME_IMAGE_SCALE_MIN = 50;
 const FRAME_IMAGE_SCALE_MAX = 110;
 const FRAME_IMAGE_SCALE_STEP = 10;
 const DASHBOARD_CONFIG_STORAGE_KEY = "markino.dashboardConfig";
-const DASHBOARD_AUTO_INTERVAL_MS = 5000;
+const DASHBOARD_AUTO_DEFAULT_INTERVAL_SECONDS = 5;
+const DASHBOARD_AUTO_MIN_INTERVAL_SECONDS = 4;
+const DASHBOARD_AUTO_MAX_INTERVAL_SECONDS = 30;
+const DASHBOARD_ANIMATION_SPEED_MIN = 1;
+const DASHBOARD_ANIMATION_SPEED_MAX = 5;
 const LIVE_VIEW_DEFAULT_INTERVAL_SECONDS = 5;
 const LIVE_VIEW_MIN_INTERVAL_SECONDS = 3;
 const LIVE_VIEW_MAX_INTERVAL_SECONDS = 30;
+const LUA_ANIMATION_MSG = 0x30;
 
 type LatLngPoint = { lat: number; lng: number };
 type GpsStatus = "checking" | "watching" | "unavailable" | "denied" | "error";
@@ -104,6 +109,7 @@ type DashboardModuleKey =
   | "nextStep"
   | "frameVitals"
   | "custom";
+type DashboardAnimationMode = "none" | "pulse" | "blink" | "ticker" | "progress" | "turn";
 type DashboardColors = Record<DashboardModuleKey, string>;
 type DashboardConfig = {
   showBrand: boolean;
@@ -118,6 +124,9 @@ type DashboardConfig = {
   emoji: string;
   showEmoji: boolean;
   animate: boolean;
+  animationMode: DashboardAnimationMode;
+  animationSpeed: number;
+  autoIntervalSeconds: number;
   colors: DashboardColors;
   fontSize: number;
   maxRows: number;
@@ -147,7 +156,37 @@ const FRAME_PALETTE: FramePaletteColor[] = [
   { index: 14, label: "Sky blue", hex: "#38bdf8" },
   { index: 15, label: "Cloud blue", hex: "#bae6fd" },
 ];
+const FRAME_LUA_COLORS = [
+  "VOID",
+  "WHITE",
+  "GREY",
+  "RED",
+  "PINK",
+  "DARKBROWN",
+  "BROWN",
+  "ORANGE",
+  "YELLOW",
+  "DARKGREEN",
+  "GREEN",
+  "LIGHTGREEN",
+  "NIGHTBLUE",
+  "SEABLUE",
+  "SKYBLUE",
+  "CLOUDBLUE",
+];
 const QUICK_TEXTS = [":)", ":D", "<3", "OK", "SOS", "!", "?", "XD", ":P", "GO"];
+const DASHBOARD_ANIMATION_PRESETS: Array<{
+  value: DashboardAnimationMode;
+  label: string;
+  description: string;
+}> = [
+  { value: "none", label: "Statica", description: "Snapshot pulito, senza effetti." },
+  { value: "pulse", label: "Pulse", description: "Emoji e prima riga respirano piano." },
+  { value: "blink", label: "Blink", description: "La riga importante lampeggia per attirare l'occhio." },
+  { value: "ticker", label: "Ticker", description: "Testo lungo in movimento nella fascia bassa." },
+  { value: "progress", label: "Progress", description: "Barra e scanline per dashboard live." },
+  { value: "turn", label: "Turn HUD", description: "Freccia grande per indicazioni e svolte." },
+];
 const CAPTURE_QUALITIES: CaptureQualityOption[] = [
   { label: "Low", value: 1, api: "LOW" },
   { label: "Medium", value: 2, api: "MEDIUM" },
@@ -178,6 +217,9 @@ const DEFAULT_DASHBOARD_CONFIG: DashboardConfig = {
   emoji: "🧭",
   showEmoji: true,
   animate: false,
+  animationMode: "none",
+  animationSpeed: 2,
+  autoIntervalSeconds: DASHBOARD_AUTO_DEFAULT_INTERVAL_SECONDS,
   colors: DEFAULT_DASHBOARD_COLORS,
   fontSize: 30,
   maxRows: 7,
@@ -210,6 +252,16 @@ const clampNumber = (value: number, min: number, max: number) =>
 const normalizeFrameImageScale = (value: number) =>
   Math.round(clampNumber(value, FRAME_IMAGE_SCALE_MIN, FRAME_IMAGE_SCALE_MAX));
 
+const luaColorName = (paletteIndex: number) =>
+  FRAME_LUA_COLORS[Math.round(clampNumber(paletteIndex, 1, FRAME_LUA_COLORS.length - 1))] || "WHITE";
+
+const cleanLuaAnimationPart = (value: string, maxLength: number) =>
+  value
+    .replace(/[|\r\n\t]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, maxLength);
+
 const readStoredFrameImageScale = () => {
   if (typeof window === "undefined") return 100;
   const stored = Number.parseInt(
@@ -219,21 +271,45 @@ const readStoredFrameImageScale = () => {
   return Number.isFinite(stored) ? normalizeFrameImageScale(stored) : 100;
 };
 
-const normalizeDashboardConfig = (value: Partial<DashboardConfig> = {}): DashboardConfig => ({
-  ...DEFAULT_DASHBOARD_CONFIG,
-  ...value,
-  colors: {
-    ...DEFAULT_DASHBOARD_COLORS,
-    ...(value.colors ?? {}),
-  },
-  emoji: (value.emoji ?? DEFAULT_DASHBOARD_CONFIG.emoji).slice(0, 8),
-  showEmoji: value.showEmoji ?? DEFAULT_DASHBOARD_CONFIG.showEmoji,
-  animate: value.animate ?? DEFAULT_DASHBOARD_CONFIG.animate,
-  fontSize: Math.round(clampNumber(value.fontSize ?? DEFAULT_DASHBOARD_CONFIG.fontSize, 18, 48)),
-  maxRows: Math.round(clampNumber(value.maxRows ?? DEFAULT_DASHBOARD_CONFIG.maxRows, 3, 10)),
-  width: Math.round(clampNumber(value.width ?? DEFAULT_DASHBOARD_CONFIG.width, 320, 640)),
-  customText: (value.customText ?? "").slice(0, 120),
-});
+const isDashboardAnimationMode = (value: unknown): value is DashboardAnimationMode =>
+  typeof value === "string"
+  && DASHBOARD_ANIMATION_PRESETS.some((preset) => preset.value === value);
+
+const normalizeDashboardConfig = (value: Partial<DashboardConfig> = {}): DashboardConfig => {
+  const legacyAnimate = value.animate ?? DEFAULT_DASHBOARD_CONFIG.animate;
+  const animationMode = isDashboardAnimationMode(value.animationMode)
+    ? value.animationMode
+    : legacyAnimate
+      ? "pulse"
+      : DEFAULT_DASHBOARD_CONFIG.animationMode;
+
+  return {
+    ...DEFAULT_DASHBOARD_CONFIG,
+    ...value,
+    colors: {
+      ...DEFAULT_DASHBOARD_COLORS,
+      ...(value.colors ?? {}),
+    },
+    emoji: (value.emoji ?? DEFAULT_DASHBOARD_CONFIG.emoji).slice(0, 8),
+    showEmoji: value.showEmoji ?? DEFAULT_DASHBOARD_CONFIG.showEmoji,
+    animate: value.animate ?? animationMode !== "none",
+    animationMode,
+    animationSpeed: Math.round(clampNumber(
+      value.animationSpeed ?? DEFAULT_DASHBOARD_CONFIG.animationSpeed,
+      DASHBOARD_ANIMATION_SPEED_MIN,
+      DASHBOARD_ANIMATION_SPEED_MAX,
+    )),
+    autoIntervalSeconds: Math.round(clampNumber(
+      value.autoIntervalSeconds ?? DEFAULT_DASHBOARD_CONFIG.autoIntervalSeconds,
+      DASHBOARD_AUTO_MIN_INTERVAL_SECONDS,
+      DASHBOARD_AUTO_MAX_INTERVAL_SECONDS,
+    )),
+    fontSize: Math.round(clampNumber(value.fontSize ?? DEFAULT_DASHBOARD_CONFIG.fontSize, 18, 48)),
+    maxRows: Math.round(clampNumber(value.maxRows ?? DEFAULT_DASHBOARD_CONFIG.maxRows, 3, 10)),
+    width: Math.round(clampNumber(value.width ?? DEFAULT_DASHBOARD_CONFIG.width, 320, 640)),
+    customText: (value.customText ?? "").slice(0, 120),
+  };
+};
 
 const readStoredDashboardConfig = () => {
   if (typeof window === "undefined") return DEFAULT_DASHBOARD_CONFIG;
@@ -1094,6 +1170,10 @@ export default function App() {
   const [textX, setTextX] = useState(24);
   const [textY, setTextY] = useState(40);
   const [textSpacing, setTextSpacing] = useState(4);
+  const [luaAnimationMode, setLuaAnimationMode] = useState<DashboardAnimationMode>("pulse");
+  const [luaAnimationTitle, setLuaAnimationTitle] = useState("BullFrame");
+  const [luaAnimationBody, setLuaAnimationBody] = useState("Pronto");
+  const [luaAnimationSpeed, setLuaAnimationSpeed] = useState(2);
   const [frameImageScale, setFrameImageScale] = useState(readStoredFrameImageScale);
   const [dashboardConfig, setDashboardConfig] = useState(readStoredDashboardConfig);
   const [showDashboardConfig, setShowDashboardConfig] = useState(false);
@@ -1822,7 +1902,7 @@ export default function App() {
   const sendFrameText = async () => {
     if (!frame) {
       setStatus("Connetti prima il Frame.");
-      return;
+      return false;
     }
 
     const text = frameText.trim();
@@ -1850,6 +1930,43 @@ export default function App() {
     }
   };
 
+  const sendLuaAnimation = async (
+    mode: DashboardAnimationMode | "stop" = luaAnimationMode,
+    overrides: Partial<{ title: string; body: string; speed: number }> = {},
+  ) => {
+    if (!frame) {
+      setStatus("Connetti prima il Frame.");
+      return;
+    }
+
+    const finalMode = mode === "none" ? "stop" : mode;
+    const title = cleanLuaAnimationPart(overrides.title ?? luaAnimationTitle, 24);
+    const body = cleanLuaAnimationPart(overrides.body ?? luaAnimationBody, 48);
+    const speed = Math.round(clampNumber(
+      overrides.speed ?? luaAnimationSpeed,
+      DASHBOARD_ANIMATION_SPEED_MIN,
+      DASHBOARD_ANIMATION_SPEED_MAX,
+    ));
+    const payload = new TextEncoder().encode([
+      finalMode,
+      title,
+      body,
+      luaColorName(textColor),
+      String(speed),
+    ].join("|"));
+
+    try {
+      await frame.sendMessage(LUA_ANIMATION_MSG, payload);
+      addLog(`✔ lua animation ${finalMode} ${payload.length}B`);
+      setStatus(finalMode === "stop" ? "Animazione Lua fermata." : `Animazione Lua ${finalMode} avviata.`);
+      return true;
+    } catch (e: any) {
+      addLog("✖ lua animation: " + e.message);
+      setStatus("Errore animazione Lua: " + e.message);
+      return false;
+    }
+  };
+
   const sendNavigationStepToFrame = async (
     step: RouteStepInfo,
     state: NavigationProgressState | null,
@@ -1871,28 +1988,22 @@ export default function App() {
     const offRoute = state && state.distanceFromRouteMeters > 35
       ? `fuori rotta ${formatDistance(state.distanceFromRouteMeters)}`
       : "";
-    const text = [
-      `NAV ${frameManeuverSymbol(step)} ${distanceLine}`.trim(),
-      step.instruction,
-      remaining,
-      offRoute,
-    ].filter(Boolean).join("\n");
+    const title = `NAV ${frameManeuverSymbol(step)} ${distanceLine}`.trim();
+    const body = [step.shortInstruction || step.instruction, remaining, offRoute]
+      .filter(Boolean)
+      .join(" · ");
 
     try {
-      await frame.sendMessage(
-        0x0a,
-        new TxPlainText({
-          text,
-          x: 12,
-          y: 28,
-          paletteOffset: 14,
-          spacing: 3,
-        }).pack(),
-      );
+      const sent = await sendLuaAnimation("turn", {
+        title,
+        body,
+        speed: Math.max(luaAnimationSpeed, 3),
+      });
+      if (!sent) return;
       addLog(`✔ nav ${reason}: ${frameManeuverSymbol(step)} ${step.shortInstruction}`);
       setStatus(`Indicazione Frame: ${frameManeuverSymbol(step)} ${distanceLine}`.trim());
     } catch (e: any) {
-      addLog("✖ nav text: " + e.message);
+      addLog("✖ nav animation: " + e.message);
       setStatus("Errore indicazione: " + e.message);
     }
   };
@@ -2492,8 +2603,12 @@ export default function App() {
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("Canvas dashboard non disponibile.");
 
-    const phase = dashboardConfig.animate ? Math.floor(now.getTime() / 1000) % 4 : 0;
-    const pulse = dashboardConfig.animate ? 0.72 + 0.28 * Math.sin(now.getTime() / 420) : 1;
+    const animationMode = dashboardConfig.animate ? dashboardConfig.animationMode : "none";
+    const speedFactor = 0.65 + dashboardConfig.animationSpeed * 0.24;
+    const phase = animationMode !== "none" ? Math.floor(now.getTime() / (900 / speedFactor)) % 4 : 0;
+    const pulse = animationMode === "pulse" || animationMode === "turn"
+      ? 0.72 + 0.28 * Math.sin(now.getTime() / (420 / speedFactor))
+      : 1;
     const contentWidth = Math.min(dashboardConfig.width, canvas.width - 32);
     const x = Math.round((canvas.width - contentWidth) / 2);
     const rowHeight = Math.max(34, Math.floor((canvas.height - 40) / dashboardConfig.maxRows));
@@ -2503,7 +2618,7 @@ export default function App() {
     ctx.fillStyle = "rgba(248, 250, 252, .08)";
     ctx.fillRect(x - 8, 12, contentWidth + 16, canvas.height - 24);
 
-    if (dashboardConfig.showEmoji && dashboardConfig.emoji.trim()) {
+    if (dashboardConfig.showEmoji && dashboardConfig.emoji.trim() && animationMode !== "turn") {
       ctx.globalAlpha = pulse;
       ctx.font = "58px system-ui, Apple Color Emoji, Segoe UI Emoji, sans-serif";
       ctx.textAlign = "right";
@@ -2515,7 +2630,8 @@ export default function App() {
     items.slice(0, dashboardConfig.maxRows).forEach((item, index) => {
       const y = 24 + index * rowHeight;
       const color = dashboardConfig.colors[item.key] || "#ffffff";
-      const animatedSuffix = dashboardConfig.animate && index === 0 ? ".".repeat(phase) : "";
+      const animatedSuffix = animationMode === "pulse" && index === 0 ? ".".repeat(phase) : "";
+      const dimBlink = animationMode === "blink" && index === 0 && phase % 2 === 1;
 
       ctx.textAlign = "left";
       ctx.textBaseline = "top";
@@ -2524,16 +2640,45 @@ export default function App() {
       ctx.fillText(item.label.toUpperCase(), x, y);
 
       ctx.font = `900 ${dashboardConfig.fontSize}px Inter, system-ui, sans-serif`;
+      ctx.globalAlpha = dimBlink ? 0.28 : 1;
       ctx.fillStyle = color;
       ctx.fillText(
         fitCanvasText(ctx, `${item.value}${animatedSuffix}`, contentWidth - 8),
         x,
         y + 13,
       );
+      ctx.globalAlpha = 1;
     });
 
-    if (dashboardConfig.animate) {
-      const progress = (now.getTime() % DASHBOARD_AUTO_INTERVAL_MS) / DASHBOARD_AUTO_INTERVAL_MS;
+    if (animationMode === "ticker") {
+      const tickerText = items.map((item) => `${item.label}: ${item.value}`).join("   |   ");
+      const tickerWidth = contentWidth - 20;
+      const offset = Math.round((now.getTime() / (34 / speedFactor)) % Math.max(tickerWidth, 1));
+      ctx.fillStyle = "rgba(15, 23, 42, .82)";
+      ctx.fillRect(x, canvas.height - 48, contentWidth, 30);
+      ctx.font = "900 18px Inter, system-ui, sans-serif";
+      ctx.fillStyle = "#f8fafc";
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(x + 10, canvas.height - 43, tickerWidth, 24);
+      ctx.clip();
+      ctx.fillText(tickerText, x + 10 - offset, canvas.height - 41);
+      ctx.fillText(tickerText, x + 10 - offset + tickerWidth + 80, canvas.height - 41);
+      ctx.restore();
+    }
+
+    if (animationMode === "turn") {
+      ctx.globalAlpha = pulse;
+      ctx.font = "900 78px Inter, system-ui, sans-serif";
+      ctx.textAlign = "right";
+      ctx.fillStyle = "#facc15";
+      ctx.fillText(">>>", canvas.width - 24 - phase * 6, 28);
+      ctx.globalAlpha = 1;
+    }
+
+    if (animationMode === "progress" || animationMode === "pulse") {
+      const autoWindowMs = dashboardConfig.autoIntervalSeconds * 1000;
+      const progress = (now.getTime() % autoWindowMs) / autoWindowMs;
       ctx.fillStyle = "rgba(20, 184, 166, .22)";
       ctx.fillRect(x, canvas.height - 18, contentWidth, 5);
       ctx.fillStyle = "#14b8a6";
@@ -2608,6 +2753,7 @@ export default function App() {
   const dashboardPreviewText = composeDashboardItems("Meteo: live")
     .map((item) => `${item.label}: ${item.value}`)
     .join("\n");
+  const dashboardAutoIntervalMs = dashboardConfig.autoIntervalSeconds * 1000;
   const destLabel = dest
     ? `${formatCoord(dest.lat)}, ${formatCoord(dest.lng)}`
     : "Click sulla mappa o inserisci coordinate";
@@ -2632,7 +2778,7 @@ export default function App() {
     };
 
     tick();
-    const timer = setInterval(tick, DASHBOARD_AUTO_INTERVAL_MS);
+    const timer = setInterval(tick, dashboardAutoIntervalMs);
     return () => {
       stopped = true;
       clearInterval(timer);
@@ -2641,6 +2787,7 @@ export default function App() {
     activeStepLabel,
     autoDashboard,
     dashboardConfig,
+    dashboardAutoIntervalMs,
     frame,
     frameImageSpriteBudget,
     frameVitals,
@@ -2933,6 +3080,85 @@ export default function App() {
                 />
               </label>
             </div>
+
+            <div style={styles.subPanel}>
+              <div style={styles.sectionHead}>
+                <div>
+                  <h3 style={styles.subTitle}>Animazioni Lua</h3>
+                  <div style={styles.sectionMeta}>Effetti locali leggeri: testo, frecce, ticker e progress bar</div>
+                </div>
+                <button onClick={() => void sendLuaAnimation("stop")} disabled={!frame} style={btn(styles.ghostButton, !frame)}>
+                  Stop animazione
+                </button>
+              </div>
+
+              <div style={styles.formGrid}>
+                <label style={styles.fieldLabel}>
+                  Preset
+                  <select
+                    value={luaAnimationMode}
+                    onChange={(e) => setLuaAnimationMode(e.target.value as DashboardAnimationMode)}
+                    style={styles.field}
+                  >
+                    {DASHBOARD_ANIMATION_PRESETS
+                      .filter((preset) => preset.value !== "none")
+                      .map((preset) => (
+                        <option key={preset.value} value={preset.value}>{preset.label}</option>
+                      ))}
+                  </select>
+                </label>
+                <label style={styles.fieldLabel}>
+                  Velocità
+                  <input
+                    type="range"
+                    min={DASHBOARD_ANIMATION_SPEED_MIN}
+                    max={DASHBOARD_ANIMATION_SPEED_MAX}
+                    step={1}
+                    value={luaAnimationSpeed}
+                    onChange={(e) => setLuaAnimationSpeed(Number(e.target.value))}
+                    style={styles.rangeField}
+                  />
+                </label>
+                <label style={styles.fieldLabel}>
+                  Titolo
+                  <input
+                    type="text"
+                    value={luaAnimationTitle}
+                    onChange={(e) => setLuaAnimationTitle(e.target.value)}
+                    style={styles.field}
+                  />
+                </label>
+                <label style={styles.fieldLabel}>
+                  Riga
+                  <input
+                    type="text"
+                    value={luaAnimationBody}
+                    onChange={(e) => setLuaAnimationBody(e.target.value)}
+                    style={styles.field}
+                  />
+                </label>
+              </div>
+
+              <div style={styles.inlineControls}>
+                {DASHBOARD_ANIMATION_PRESETS
+                  .filter((preset) => preset.value !== "none")
+                  .map((preset) => (
+                    <button
+                      key={preset.value}
+                      onClick={() => {
+                        setLuaAnimationMode(preset.value);
+                        void sendLuaAnimation(preset.value);
+                      }}
+                      disabled={!frame}
+                      title={preset.description}
+                      style={btn(styles.ghostButton, !frame)}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+              </div>
+              <div style={styles.inlineHint}>Questi effetti girano nel Lua del Frame: non inviano immagini continue e pesano pochi byte via BLE.</div>
+            </div>
           </section>
 
           <section style={{ ...styles.panel, display: activeTab === "camera" ? "block" : "none" }}>
@@ -3093,9 +3319,18 @@ export default function App() {
             <button onClick={() => setAutoDashboard((value) => !value)} style={styles.ghostButton}>
               Auto dashboard {autoDashboard ? "on" : "off"}
             </button>
+            <button onClick={() => void sendLuaAnimation("pulse")} disabled={!frame} style={btn(styles.ghostButton, !frame)}>Lua pulse</button>
+            <button onClick={() => void sendLuaAnimation("ticker")} disabled={!frame} style={btn(styles.ghostButton, !frame)}>Lua ticker</button>
+            <button
+              onClick={() => void sendLuaAnimation("turn", { title: "NAV", body: activeStepLabel, speed: 4 })}
+              disabled={!frame}
+              style={btn(styles.ghostButton, !frame)}
+            >
+              Lua freccia
+            </button>
             <button onClick={handleClear} disabled={!frame} style={btn(styles.ghostButton, !frame)}>Pulisci display</button>
             <button onClick={handleDisconnect} disabled={!frame} style={btn(styles.dangerButton, !frame)}>Disconnetti</button>
-            <div style={styles.sideHint}>Dashboard invia il pannello configurato. Auto dashboard lo aggiorna ogni 5s.</div>
+            <div style={styles.sideHint}>Dashboard invia sprite. Le animazioni Lua girano locali sul Frame e usano payload piccoli.</div>
           </div>
 
           <div style={styles.sideBlock}>
@@ -3258,9 +3493,53 @@ export default function App() {
                 <input
                   type="checkbox"
                   checked={dashboardConfig.animate}
-                  onChange={(e) => updateDashboardConfig({ animate: e.target.checked })}
+                  onChange={(e) => updateDashboardConfig({
+                    animate: e.target.checked,
+                    animationMode: e.target.checked && dashboardConfig.animationMode === "none"
+                      ? "pulse"
+                      : dashboardConfig.animationMode,
+                  })}
                 />
                 Animazione
+              </label>
+              <label style={styles.fieldLabel}>
+                Preset canvas
+                <select
+                  value={dashboardConfig.animationMode}
+                  onChange={(e) => updateDashboardConfig({
+                    animationMode: e.target.value as DashboardAnimationMode,
+                    animate: e.target.value !== "none",
+                  })}
+                  style={styles.field}
+                >
+                  {DASHBOARD_ANIMATION_PRESETS.map((preset) => (
+                    <option key={preset.value} value={preset.value}>{preset.label}</option>
+                  ))}
+                </select>
+              </label>
+              <label style={styles.fieldLabel}>
+                Auto ogni sec
+                <input
+                  type="number"
+                  min={DASHBOARD_AUTO_MIN_INTERVAL_SECONDS}
+                  max={DASHBOARD_AUTO_MAX_INTERVAL_SECONDS}
+                  step={1}
+                  value={dashboardConfig.autoIntervalSeconds}
+                  onChange={(e) => updateDashboardConfig({ autoIntervalSeconds: Number(e.target.value) })}
+                  style={styles.field}
+                />
+              </label>
+              <label style={styles.fieldLabel}>
+                Velocità canvas
+                <input
+                  type="range"
+                  min={DASHBOARD_ANIMATION_SPEED_MIN}
+                  max={DASHBOARD_ANIMATION_SPEED_MAX}
+                  step={1}
+                  value={dashboardConfig.animationSpeed}
+                  onChange={(e) => updateDashboardConfig({ animationSpeed: Number(e.target.value) })}
+                  style={styles.rangeField}
+                />
               </label>
               <label style={styles.fieldLabel}>
                 Emoji dashboard
@@ -3434,6 +3713,19 @@ const styles: Record<string, React.CSSProperties> = {
     backgroundColor: "#ffffff",
     border: "1px solid #ddd4c5",
     boxShadow: "0 8px 28px rgba(58, 48, 34, .10)",
+  },
+  subPanel: {
+    marginTop: 14,
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: "#f7f4ed",
+    border: "1px solid #ddd4c5",
+  },
+  subTitle: {
+    margin: 0,
+    color: "#171717",
+    fontSize: 16,
+    lineHeight: 1.2,
   },
   sidePanel: {
     display: "grid",
