@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import {
   FrameMsg,
   StdLua,
@@ -26,13 +26,29 @@ const POLLINATIONS_MODEL = import.meta.env.VITE_POLLINATIONS_MODEL?.trim() || "s
 const OSRM_URL = "https://router.project-osrm.org";
 const DEFAULT_CENTER = { lat: 40.8362, lng: 16.5936 };
 const ROUTE_DEBOUNCE_MS = 700;
+const ROUTE_RECALC_DISTANCE_METERS = 45;
+const ROUTE_DESTINATION_CHANGE_METERS = 8;
 const NAVIGATION_ZOOM = 19;
-const AUTO_MAP_INTERVAL_MS = 12000;
+const AUTO_MAP_INTERVAL_MS = 18000;
 const MAP_SEND_COOLDOWN_MS = 3500;
+const NAV_STEP_SWITCH_TOLERANCE_METERS = 8;
+const NAV_FRAME_DISTANCE_BUCKET_METERS = 25;
+const NAV_FRAME_MIN_AUTO_MS = 8000;
 const FRAME_MAP_WIDTH = 640;
 const FRAME_MAP_HEIGHT = 400;
 const FRAME_MAP_JPEG_QUALITY = 0.58;
 const FRAME_MAP_SPRITE_BUDGET = 24000;
+const FRAME_IMAGE_SPRITE_BUDGET = 36000;
+const FRAME_MIN_SPRITE_BUDGET = 6000;
+const FRAME_MAX_SPRITE_BUDGET = 160000;
+const FRAME_IMAGE_SCALE_STORAGE_KEY = "markino.frameImageScale";
+const FRAME_IMAGE_SCALE_MIN = 50;
+const FRAME_IMAGE_SCALE_MAX = 220;
+const FRAME_IMAGE_SCALE_STEP = 10;
+const DASHBOARD_CONFIG_STORAGE_KEY = "markino.dashboardConfig";
+const LIVE_VIEW_DEFAULT_INTERVAL_SECONDS = 5;
+const LIVE_VIEW_MIN_INTERVAL_SECONDS = 3;
+const LIVE_VIEW_MAX_INTERVAL_SECONDS = 30;
 
 type LatLngPoint = { lat: number; lng: number };
 type GpsStatus = "checking" | "watching" | "unavailable" | "denied" | "error";
@@ -54,6 +70,17 @@ type RouteStepInfo = {
   durationSeconds: number;
   location: LatLngPoint;
   roadName: string;
+  maneuverType: string;
+  modifier: string;
+  cumulativeMeters: number;
+};
+type NavigationProgressState = {
+  progressMeters: number;
+  remainingMeters: number;
+  distanceFromRouteMeters: number;
+  activeStepIndex: number;
+  distanceToInstructionMeters: number;
+  isManeuverSoon: boolean;
 };
 type MapOrientationMode = "north" | "route";
 type ToolTab = "map" | "frame" | "camera" | "ai" | "logs";
@@ -67,6 +94,21 @@ type CaptureQualityOption = {
   value: number;
   api: JpegQuality;
 };
+type DashboardConfig = {
+  showBrand: boolean;
+  showDate: boolean;
+  showTime: boolean;
+  showWeather: boolean;
+  showRoute: boolean;
+  showGps: boolean;
+  showNextStep: boolean;
+  showFrameVitals: boolean;
+  customText: string;
+  fontSize: number;
+  maxRows: number;
+  width: number;
+};
+type LiveViewMode = "off" | "app" | "screen";
 
 const FRAME_PALETTE: FramePaletteColor[] = [
   { index: 1, label: "White", hex: "#f8fafc" },
@@ -92,6 +134,20 @@ const CAPTURE_QUALITIES: CaptureQualityOption[] = [
   { label: "High", value: 3, api: "HIGH" },
   { label: "Very high", value: 4, api: "VERY_HIGH" },
 ];
+const DEFAULT_DASHBOARD_CONFIG: DashboardConfig = {
+  showBrand: true,
+  showDate: true,
+  showTime: true,
+  showWeather: true,
+  showRoute: true,
+  showGps: false,
+  showNextStep: false,
+  showFrameVitals: false,
+  customText: "",
+  fontSize: 30,
+  maxRows: 7,
+  width: 600,
+};
 
 const blobUrl = (bytes: ArrayBuffer | Uint8Array, mime = "image/jpeg") =>
   URL.createObjectURL(new Blob([bytes], { type: mime }));
@@ -111,6 +167,53 @@ const formatDuration = (seconds: number) => {
 const parseCoordinate = (value: string) => {
   const parsed = Number.parseFloat(value.replace(",", "."));
   return Number.isFinite(parsed) ? parsed : null;
+};
+
+const clampNumber = (value: number, min: number, max: number) =>
+  Math.min(max, Math.max(min, value));
+
+const normalizeFrameImageScale = (value: number) =>
+  Math.round(clampNumber(value, FRAME_IMAGE_SCALE_MIN, FRAME_IMAGE_SCALE_MAX));
+
+const readStoredFrameImageScale = () => {
+  if (typeof window === "undefined") return 100;
+  const stored = Number.parseInt(
+    window.localStorage.getItem(FRAME_IMAGE_SCALE_STORAGE_KEY) || "",
+    10,
+  );
+  return Number.isFinite(stored) ? normalizeFrameImageScale(stored) : 100;
+};
+
+const normalizeDashboardConfig = (value: Partial<DashboardConfig> = {}): DashboardConfig => ({
+  ...DEFAULT_DASHBOARD_CONFIG,
+  ...value,
+  fontSize: Math.round(clampNumber(value.fontSize ?? DEFAULT_DASHBOARD_CONFIG.fontSize, 18, 48)),
+  maxRows: Math.round(clampNumber(value.maxRows ?? DEFAULT_DASHBOARD_CONFIG.maxRows, 3, 10)),
+  width: Math.round(clampNumber(value.width ?? DEFAULT_DASHBOARD_CONFIG.width, 320, 640)),
+  customText: (value.customText ?? "").slice(0, 120),
+});
+
+const readStoredDashboardConfig = () => {
+  if (typeof window === "undefined") return DEFAULT_DASHBOARD_CONFIG;
+  try {
+    const raw = window.localStorage.getItem(DASHBOARD_CONFIG_STORAGE_KEY);
+    return raw
+      ? normalizeDashboardConfig(JSON.parse(raw) as Partial<DashboardConfig>)
+      : DEFAULT_DASHBOARD_CONFIG;
+  } catch {
+    return DEFAULT_DASHBOARD_CONFIG;
+  }
+};
+
+const scaledSpriteBudget = (basePixels: number, scalePercent: number) => {
+  const scale = normalizeFrameImageScale(scalePercent) / 100;
+  return Math.round(
+    clampNumber(
+      basePixels * scale * scale,
+      FRAME_MIN_SPRITE_BUDGET,
+      FRAME_MAX_SPRITE_BUDGET,
+    ),
+  );
 };
 
 const isValidLatLng = (point: LatLngPoint) =>
@@ -205,6 +308,134 @@ const routePathWithAnchors = (
   if (!last || haversineMeters(destination, last) > 3) anchored.push(destination);
 
   return anchored;
+};
+
+const projectPointOnRoute = (
+  point: LatLngPoint,
+  path: LatLngPoint[],
+): { progressMeters: number; totalMeters: number; distanceFromRouteMeters: number } | null => {
+  if (path.length < 2) return null;
+
+  const origin = path[0];
+  const metersPerLat = 111320;
+  const metersPerLng = Math.cos(origin.lat * Math.PI / 180) * 111320;
+  const toXY = (value: LatLngPoint) => ({
+    x: (value.lng - origin.lng) * metersPerLng,
+    y: (value.lat - origin.lat) * metersPerLat,
+  });
+
+  const current = toXY(point);
+  let walkedMeters = 0;
+  let routeMeters = 0;
+  let bestProgress = 0;
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  for (let i = 0; i < path.length - 1; i += 1) {
+    const start = toXY(path[i]);
+    const end = toXY(path[i + 1]);
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const segmentMeters = haversineMeters(path[i], path[i + 1]);
+    routeMeters += segmentMeters;
+
+    const lengthSquared = dx * dx + dy * dy;
+    const amount = lengthSquared > 0
+      ? clampNumber(((current.x - start.x) * dx + (current.y - start.y) * dy) / lengthSquared, 0, 1)
+      : 0;
+    const projected = {
+      x: start.x + dx * amount,
+      y: start.y + dy * amount,
+    };
+    const distance = Math.hypot(current.x - projected.x, current.y - projected.y);
+
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestProgress = walkedMeters + segmentMeters * amount;
+    }
+
+    walkedMeters += segmentMeters;
+  }
+
+  return {
+    progressMeters: bestProgress,
+    totalMeters: routeMeters,
+    distanceFromRouteMeters: bestDistance,
+  };
+};
+
+const maneuverAlertDistance = (step: RouteStepInfo) => {
+  if (step.maneuverType === "arrive") return 35;
+  if (step.maneuverType === "depart") return 20;
+  if (step.maneuverType === "roundabout" || step.maneuverType === "rotary") return 95;
+  if (step.modifier.includes("sharp")) return 90;
+  if (step.modifier.includes("slight")) return 65;
+  return 80;
+};
+
+const buildNavigationState = (
+  current: LatLngPoint | null,
+  path: LatLngPoint[],
+  steps: RouteStepInfo[],
+  summaryDistanceMeters?: number,
+): NavigationProgressState | null => {
+  if (!current || path.length < 2 || steps.length === 0) return null;
+
+  const projection = projectPointOnRoute(current, path);
+  if (!projection) return null;
+
+  const progressMeters = projection.progressMeters;
+  let currentStepIndex = 0;
+  steps.forEach((step, index) => {
+    if (step.cumulativeMeters <= progressMeters + NAV_STEP_SWITCH_TOLERANCE_METERS) {
+      currentStepIndex = index;
+    }
+  });
+
+  const nextStepIndex = steps.findIndex(
+    (step, index) =>
+      index > currentStepIndex &&
+      step.cumulativeMeters > progressMeters + NAV_STEP_SWITCH_TOLERANCE_METERS,
+  );
+  const upcomingIndex = nextStepIndex >= 0 ? nextStepIndex : steps.length - 1;
+  const upcomingStep = steps[upcomingIndex];
+  const distanceToUpcoming = Math.max(0, upcomingStep.cumulativeMeters - progressMeters);
+  const shouldPreviewUpcoming =
+    upcomingIndex > currentStepIndex &&
+    distanceToUpcoming <= maneuverAlertDistance(upcomingStep);
+  const activeStepIndex = shouldPreviewUpcoming ? upcomingIndex : currentStepIndex;
+  const activeStep = steps[activeStepIndex];
+  const followingStep = steps[activeStepIndex + 1];
+  const distanceToInstructionMeters = Math.max(
+    0,
+    shouldPreviewUpcoming
+      ? distanceToUpcoming
+      : (followingStep?.cumulativeMeters ?? projection.totalMeters) - progressMeters,
+  );
+
+  return {
+    progressMeters,
+    remainingMeters: Math.max(
+      0,
+      Math.min(
+        projection.totalMeters - progressMeters,
+        summaryDistanceMeters ?? Number.POSITIVE_INFINITY,
+      ),
+    ),
+    distanceFromRouteMeters: projection.distanceFromRouteMeters,
+    activeStepIndex,
+    distanceToInstructionMeters,
+    isManeuverSoon: shouldPreviewUpcoming || distanceToInstructionMeters <= maneuverAlertDistance(activeStep),
+  };
+};
+
+const frameManeuverSymbol = (step: RouteStepInfo) => {
+  if (step.maneuverType === "arrive") return "OK";
+  if (step.maneuverType === "depart") return "GO";
+  if (step.maneuverType === "roundabout" || step.maneuverType === "rotary") return "O";
+  if (step.modifier.includes("left")) return "<<";
+  if (step.modifier.includes("right")) return ">>";
+  if (step.modifier === "straight" || step.maneuverType === "continue") return "^";
+  return ">";
 };
 
 const applyMapRotation = (map: L.Map, bearing: number) => {
@@ -347,21 +578,31 @@ const buildInstruction = (step: any, index: number) => {
   }
 };
 
-const normalizeRouteSteps = (route: any): RouteStepInfo[] => {
+const normalizeRouteSteps = (route: any, startOffsetMeters = 0): RouteStepInfo[] => {
   const steps = route?.legs?.flatMap((leg: any) => leg.steps || []) || [];
+  let cumulativeMeters = startOffsetMeters;
+
   return steps
     .map((step: any, index: number) => {
       const location = step.maneuver?.location;
       if (!Array.isArray(location) || location.length < 2) return null;
+      const stepDistance = step.distance || 0;
+      const maneuverType = step.maneuver?.type || "";
+      const modifier = step.maneuver?.modifier || "";
       const instruction = buildInstruction(step, index);
-      return {
+      const normalized = {
         instruction,
-        shortInstruction: `${instruction} (${formatDistance(step.distance || 0)})`,
-        distanceMeters: step.distance || 0,
+        shortInstruction: `${instruction} (${formatDistance(stepDistance)})`,
+        distanceMeters: stepDistance,
         durationSeconds: step.duration || 0,
         location: { lng: location[0], lat: location[1] },
         roadName: step.name || "",
+        maneuverType,
+        modifier,
+        cumulativeMeters,
       } satisfies RouteStepInfo;
+      cumulativeMeters += stepDistance;
+      return normalized;
     })
     .filter(Boolean) as RouteStepInfo[];
 };
@@ -535,6 +776,26 @@ const buildResponsiveStyles = (viewportWidth: number): Record<string, React.CSSP
     sideTitle: {
       ...styles.sideTitle,
       gridColumn: "1 / -1",
+    },
+    sideInline: {
+      ...styles.sideInline,
+      gridTemplateColumns: "76px minmax(0, 1fr)",
+    },
+    modalBackdrop: {
+      ...styles.modalBackdrop,
+      padding: isTiny ? 8 : 12,
+      alignItems: "start",
+    },
+    modalPanel: {
+      ...styles.modalPanel,
+      maxHeight: isTiny ? "calc(100svh - 16px)" : "calc(100svh - 24px)",
+      padding: isTiny ? 10 : 12,
+    },
+    modalActions: {
+      ...styles.modalActions,
+      display: "grid",
+      gridTemplateColumns: isTiny ? "minmax(0, 1fr)" : "repeat(3, minmax(0, 1fr))",
+      justifyContent: "stretch",
     },
     panel: {
       ...styles.panel,
@@ -782,6 +1043,12 @@ export default function App() {
   const [textX, setTextX] = useState(24);
   const [textY, setTextY] = useState(40);
   const [textSpacing, setTextSpacing] = useState(4);
+  const [frameImageScale, setFrameImageScale] = useState(readStoredFrameImageScale);
+  const [dashboardConfig, setDashboardConfig] = useState(readStoredDashboardConfig);
+  const [showDashboardConfig, setShowDashboardConfig] = useState(false);
+  const [frameVitals, setFrameVitals] = useState("");
+  const [liveViewMode, setLiveViewMode] = useState<LiveViewMode>("off");
+  const [liveViewIntervalSeconds, setLiveViewIntervalSeconds] = useState(LIVE_VIEW_DEFAULT_INTERVAL_SECONDS);
   const [captureResolution, setCaptureResolution] = useState(512);
   const [captureQualityIndex, setCaptureQualityIndex] = useState(2);
   const [capturePan, setCapturePan] = useState(0);
@@ -805,6 +1072,7 @@ export default function App() {
   const [routeOverlay, setRouteOverlay] = useState<RouteOverlayState | null>(null);
   const [activeStepIndex, setActiveStepIndex] = useState(0);
   const [isRouting, setIsRouting] = useState(false);
+  const [autoFrameNavigation, setAutoFrameNavigation] = useState(true);
   const [mapOrientation, setMapOrientation] = useState<MapOrientationMode>("route");
   const [mapBearing, setMapBearing] = useState(0);
   const [destInput, setDestInput] = useState({ lat: "", lng: "" });
@@ -820,13 +1088,18 @@ export default function App() {
 
   const mapRef = useRef<HTMLDivElement>(null);
   const mapShellRef = useRef<HTMLDivElement>(null);
+  const appShellRef = useRef<HTMLDivElement>(null);
   const leafletMap = useRef<L.Map | null>(null);
   const autoUpdateRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const liveViewTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const liveViewStreamRef = useRef<MediaStream | null>(null);
+  const liveViewVideoRef = useRef<HTMLVideoElement | null>(null);
   const routeAbortRef = useRef<AbortController | null>(null);
-  const lastRouteKeyRef = useRef<string | null>(null);
+  const lastRouteRequestRef = useRef<{ origin: LatLngPoint; destination: LatLngPoint } | null>(null);
   const isSendingMapRef = useRef(false);
   const lastMapSendAtRef = useRef(0);
   const mapSendCountRef = useRef(0);
+  const lastAutoNavSendRef = useRef<{ stepIndex: number; bucket: number; sentAt: number } | null>(null);
 
   const poiList = [
     { name: "Bar", lat: 40.8367, lng: 16.5931 },
@@ -836,6 +1109,14 @@ export default function App() {
   const addLog = (m: string) =>
     setLogs((l) => [...l.slice(-19), `${new Date().toLocaleTimeString()}: ${m}`]);
 
+  useEffect(() => {
+    window.localStorage.setItem(FRAME_IMAGE_SCALE_STORAGE_KEY, String(frameImageScale));
+  }, [frameImageScale]);
+
+  useEffect(() => {
+    window.localStorage.setItem(DASHBOARD_CONFIG_STORAGE_KEY, JSON.stringify(dashboardConfig));
+  }, [dashboardConfig]);
+
   const destinationFromInput = (): LatLngPoint | null => {
     const lat = parseCoordinate(destInput.lat);
     const lng = parseCoordinate(destInput.lng);
@@ -843,6 +1124,11 @@ export default function App() {
     const point = { lat, lng };
     return isValidLatLng(point) ? point : null;
   };
+
+  const navigationState = useMemo(
+    () => buildNavigationState(pos, routePath, routeSteps, routeSummary?.distanceMeters),
+    [pos, routePath, routeSteps, routeSummary],
+  );
 
   // ───────── Compass listener ─────────
   useEffect(() => {
@@ -1006,7 +1292,8 @@ export default function App() {
 
     if (!map || !pos || !dest) {
       routeAbortRef.current?.abort();
-      lastRouteKeyRef.current = null;
+      lastRouteRequestRef.current = null;
+      lastAutoNavSendRef.current = null;
 
       if (map) {
         removeLayer(routeLayer.current, map);
@@ -1024,14 +1311,20 @@ export default function App() {
       return;
     }
 
-    const routeKey = [
-      pos.lat.toFixed(4),
-      pos.lng.toFixed(4),
-      dest.lat.toFixed(5),
-      dest.lng.toFixed(5),
-    ].join(",");
+    const lastRouteRequest = lastRouteRequestRef.current;
+    const currentProjection = routePath.length >= 2
+      ? projectPointOnRoute(pos, routePath)
+      : null;
+    const isOffRoute = currentProjection
+      ? currentProjection.distanceFromRouteMeters > 40
+      : false;
+    const canKeepCurrentRoute =
+      Boolean(routeLayer.current && lastRouteRequest) &&
+      haversineMeters(lastRouteRequest!.origin, pos) < ROUTE_RECALC_DISTANCE_METERS &&
+      haversineMeters(lastRouteRequest!.destination, dest) < ROUTE_DESTINATION_CHANGE_METERS &&
+      !isOffRoute;
 
-    if (lastRouteKeyRef.current === routeKey && routeLayer.current) {
+    if (canKeepCurrentRoute) {
       setIsRouting(false);
       return;
     }
@@ -1043,7 +1336,8 @@ export default function App() {
     setRoutePath([]);
     setRouteOverlay(null);
     setActiveStepIndex(0);
-    lastRouteKeyRef.current = routeKey;
+    lastAutoNavSendRef.current = null;
+    lastRouteRequestRef.current = { origin: pos, destination: dest };
 
     const controller = new AbortController();
     routeAbortRef.current = controller;
@@ -1102,6 +1396,9 @@ export default function App() {
         durationSeconds,
         location: dest,
         roadName: "",
+        maneuverType: "continue",
+        modifier: "straight",
+        cumulativeMeters: 0,
       }]);
       setRoutePath([pos, dest]);
       setRouteVariant("fallback");
@@ -1131,9 +1428,11 @@ export default function App() {
             throw new Error("Nessuna rotta trovata.");
           }
 
-          const path = routePathWithAnchors(pos, dest, coordinates.map(
+          const osrmPath = coordinates.map(
             ([lng, lat]: [number, number]) => ({ lat, lng }),
-          ) as LatLngPoint[]);
+          ) as LatLngPoint[];
+          const startOffsetMeters = osrmPath[0] ? haversineMeters(pos, osrmPath[0]) : 0;
+          const path = routePathWithAnchors(pos, dest, osrmPath);
 
           drawRouteLayers(path, "driving");
 
@@ -1141,7 +1440,7 @@ export default function App() {
             distanceMeters: route.distance,
             durationSeconds: route.duration,
           });
-          setRouteSteps(normalizeRouteSteps(route));
+          setRouteSteps(normalizeRouteSteps(route, startOffsetMeters));
           setRoutePath(path);
           setRouteVariant("driving");
 
@@ -1230,26 +1529,13 @@ export default function App() {
   }, [activeTab, dest, mapBearing, mapOrientation, pos, routePath, routeVariant, viewportWidth]);
 
   useEffect(() => {
-    if (!pos || routeSteps.length === 0) return;
-
-    let closestIndex = 0;
-    let closestDistance = Number.POSITIVE_INFINITY;
-
-    routeSteps.forEach((step, index) => {
-      const distance = haversineMeters(pos, step.location);
-      if (distance < closestDistance) {
-        closestDistance = distance;
-        closestIndex = index;
-      }
-    });
-
-    setActiveStepIndex((current) => {
-      if (closestIndex > current || closestDistance < 35) {
-        return closestIndex;
-      }
-      return current;
-    });
-  }, [pos, routeSteps]);
+    if (!navigationState) return;
+    setActiveStepIndex((current) =>
+      current === navigationState.activeStepIndex
+        ? current
+        : navigationState.activeStepIndex,
+    );
+  }, [navigationState]);
 
   useEffect(() => {
     const map = leafletMap.current;
@@ -1389,6 +1675,90 @@ export default function App() {
     );
   };
 
+  const sendCanvasSnapshotToFrame = async (
+    source: HTMLCanvasElement,
+    label: string,
+    budget = frameMapSpriteBudget,
+  ) => {
+    if (!frame) {
+      setStatus("Connetti prima il Frame.");
+      return false;
+    }
+    if (isCapturing) {
+      setStatus("Aspetta la fine della cattura foto.");
+      return false;
+    }
+    if (isSendingMapRef.current) {
+      setStatus("Invio immagine già in corso, salto questo frame.");
+      return false;
+    }
+    const now = Date.now();
+    if (now - lastMapSendAtRef.current < MAP_SEND_COOLDOWN_MS) {
+      setStatus("Troppi update immagine ravvicinati, attendo un attimo.");
+      return false;
+    }
+
+    isSendingMapRef.current = true;
+    lastMapSendAtRef.current = now;
+
+    try {
+      const blob = await mapCanvasToFrameJpeg(source);
+      const arr = await blob.arrayBuffer();
+      const sprite = await TxSprite.fromImageBytes(arr, budget);
+
+      await frame.sendMessage(0x20, sprite.pack());
+      addLog(
+        `✔ ${label} ${sprite.width}x${sprite.height} scala ${frameImageScale}% ` +
+        `${Math.round(arr.byteLength / 1024)}KB`,
+      );
+      setStatus(`${label} mostrato sul Frame: ${sprite.width}x${sprite.height}.`);
+      return true;
+    } catch (e: any) {
+      addLog(`✖ ${label}: ${e.message || e}`);
+      setStatus(`Errore ${label}: ${e.message || e}`);
+      return false;
+    } finally {
+      isSendingMapRef.current = false;
+    }
+  };
+
+  const captureAppViewportCanvas = async () =>
+    html2canvas(appShellRef.current ?? document.body, {
+      useCORS: true,
+      allowTaint: false,
+      backgroundColor: "#f8fafc",
+      scale: 1,
+      x: window.scrollX,
+      y: window.scrollY,
+      width: window.innerWidth,
+      height: window.innerHeight,
+      windowWidth: window.innerWidth,
+      windowHeight: window.innerHeight,
+    });
+
+  const captureScreenCanvas = () => {
+    const video = liveViewVideoRef.current;
+    if (!video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+      throw new Error("Stream schermo non ancora pronto.");
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth || FRAME_MAP_WIDTH;
+    canvas.height = video.videoHeight || FRAME_MAP_HEIGHT;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Canvas 2D non disponibile.");
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    return canvas;
+  };
+
+  const sendLiveViewFrame = async (mode: LiveViewMode) => {
+    if (mode === "off") return false;
+    const canvas = mode === "screen"
+      ? captureScreenCanvas()
+      : await captureAppViewportCanvas();
+    return sendCanvasSnapshotToFrame(canvas, mode === "screen" ? "Live screen" : "Live app");
+  };
+
   const appendQuickText = (value: string) => {
     setFrameText((current) => {
       const spacer = current.trim() ? " " : "";
@@ -1427,20 +1797,33 @@ export default function App() {
     }
   };
 
-  const sendNavigationStep = async () => {
+  const sendNavigationStepToFrame = async (
+    step: RouteStepInfo,
+    state: NavigationProgressState | null,
+    reason = "manual",
+  ) => {
     if (!frame) {
       setStatus("Connetti prima il Frame.");
       return;
     }
 
-    const step = routeSteps[activeStepIndex];
-    if (!step) {
-      setStatus("Nessuna indicazione disponibile.");
-      return;
-    }
-
-    const remaining = routeSummary ? `${formatDistance(routeSummary.distanceMeters)} totali` : "";
-    const text = [`NAV`, step.shortInstruction, remaining].filter(Boolean).join("\n");
+    const distanceLine = state
+      ? `${state.distanceToInstructionMeters <= 18 ? "ORA" : `tra ${formatDistance(state.distanceToInstructionMeters)}`}`
+      : "";
+    const remaining = state
+      ? `${formatDistance(state.remainingMeters)} restanti`
+      : routeSummary
+        ? `${formatDistance(routeSummary.distanceMeters)} totali`
+        : "";
+    const offRoute = state && state.distanceFromRouteMeters > 35
+      ? `fuori rotta ${formatDistance(state.distanceFromRouteMeters)}`
+      : "";
+    const text = [
+      `NAV ${frameManeuverSymbol(step)} ${distanceLine}`.trim(),
+      step.instruction,
+      remaining,
+      offRoute,
+    ].filter(Boolean).join("\n");
 
     try {
       await frame.sendMessage(
@@ -1453,12 +1836,21 @@ export default function App() {
           spacing: 3,
         }).pack(),
       );
-      addLog(`✔ indicazione inviata: ${step.shortInstruction}`);
-      setStatus("Indicazione inviata al Frame.");
+      addLog(`✔ nav ${reason}: ${frameManeuverSymbol(step)} ${step.shortInstruction}`);
+      setStatus(`Indicazione Frame: ${frameManeuverSymbol(step)} ${distanceLine}`.trim());
     } catch (e: any) {
       addLog("✖ nav text: " + e.message);
       setStatus("Errore indicazione: " + e.message);
     }
+  };
+
+  const sendNavigationStep = async () => {
+    const step = routeSteps[activeStepIndex];
+    if (!step) {
+      setStatus("Nessuna indicazione disponibile.");
+      return;
+    }
+    await sendNavigationStepToFrame(step, navigationState);
   };
 
   // ───────── Connect & start Frame ─────────
@@ -1476,6 +1868,7 @@ export default function App() {
         'print(frame.battery_level() .. " / " .. collectgarbage("count"))',
         { awaitPrint: true }
       );
+      setFrameVitals(String(battMem || ""));
       addLog(`⚙️ Batt/Mem: ${battMem}`);
 
       await f.uploadStdLuaLibs([
@@ -1511,44 +1904,105 @@ export default function App() {
   };
   // ───────── Snapshot Mappa ─────────
   const sendMapToFrame = async () => {
-    if (isCapturing) {
-      setStatus("Aspetta la fine della cattura foto.");
-      return;
-    }
     if (!frame || !mapRef.current) {
       setStatus("Errore: init mappa o frame");
-      return;
+      return false;
     }
-    if (isSendingMapRef.current) {
-      setStatus("Mappa già in invio, salto questo update.");
-      return;
-    }
-    const now = Date.now();
-    if (now - lastMapSendAtRef.current < MAP_SEND_COOLDOWN_MS) {
-      setStatus("Troppi update mappa ravvicinati, attendo un attimo.");
-      return;
-    }
-
-    isSendingMapRef.current = true;
-    lastMapSendAtRef.current = now;
     setStatus("📸 Snap mappa…");
     addLog("▶ sendMapToFrame");
 
     try {
       const canvas = await mapToCanvas();
-      const blob = await mapCanvasToFrameJpeg(canvas);
-      const arr = await blob.arrayBuffer();
-      const sprite = await TxSprite.fromImageBytes(arr, FRAME_MAP_SPRITE_BUDGET);
-
-      await frame.sendMessage(0x20, sprite.pack());
-      mapSendCountRef.current += 1;
-      addLog(`✔ mappa inviata ${Math.round(arr.byteLength / 1024)}KB #${mapSendCountRef.current}`);
-      setStatus("Mappa mostrata. Auto update limitato per non saturare memoria Frame.");
+      const sent = await sendCanvasSnapshotToFrame(canvas, "Mappa");
+      if (sent) mapSendCountRef.current += 1;
+      return sent;
     } catch (e: any) {
       addLog("✖ map error: " + e);
       setStatus("Errore mappa");
-    } finally {
-      isSendingMapRef.current = false;
+      return false;
+    }
+  };
+
+  const stopLiveView = () => {
+    if (liveViewTimerRef.current) {
+      clearInterval(liveViewTimerRef.current);
+      liveViewTimerRef.current = null;
+    }
+    liveViewStreamRef.current?.getTracks().forEach((track) => track.stop());
+    liveViewStreamRef.current = null;
+    liveViewVideoRef.current = null;
+    setLiveViewMode("off");
+    addLog("■ Live view OFF");
+  };
+
+  const startLiveViewLoop = (mode: LiveViewMode) => {
+    if (!frame) {
+      setStatus("Connetti prima il Frame.");
+      return;
+    }
+
+    if (liveViewTimerRef.current) {
+      clearInterval(liveViewTimerRef.current);
+      liveViewTimerRef.current = null;
+    }
+
+    const intervalMs = clampNumber(
+      liveViewIntervalSeconds,
+      LIVE_VIEW_MIN_INTERVAL_SECONDS,
+      LIVE_VIEW_MAX_INTERVAL_SECONDS,
+    ) * 1000;
+
+    setLiveViewMode(mode);
+    setShowDashboardConfig(false);
+    void sendLiveViewFrame(mode).catch((e) => {
+      addLog(`✖ live ${mode}: ${e.message || e}`);
+      setStatus(`Errore live ${mode}: ${e.message || e}`);
+    });
+    liveViewTimerRef.current = setInterval(() => {
+      void sendLiveViewFrame(mode).catch((e) => {
+        addLog(`✖ live ${mode}: ${e.message || e}`);
+        setStatus(`Errore live ${mode}: ${e.message || e}`);
+      });
+    }, intervalMs);
+    addLog(`▶ Live ${mode} ON ${intervalMs / 1000}s`);
+  };
+
+  const startAppLiveView = () => {
+    liveViewStreamRef.current?.getTracks().forEach((track) => track.stop());
+    liveViewStreamRef.current = null;
+    liveViewVideoRef.current = null;
+    startLiveViewLoop("app");
+  };
+
+  const startScreenLiveView = async () => {
+    if (!frame) {
+      setStatus("Connetti prima il Frame.");
+      return;
+    }
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      setStatus("Screen capture non supportato da questo browser.");
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: false,
+      });
+      const video = document.createElement("video");
+      video.muted = true;
+      video.playsInline = true;
+      video.srcObject = stream;
+      await video.play();
+
+      liveViewStreamRef.current?.getTracks().forEach((track) => track.stop());
+      liveViewStreamRef.current = stream;
+      liveViewVideoRef.current = video;
+      stream.getVideoTracks()[0]?.addEventListener("ended", stopLiveView, { once: true });
+      startLiveViewLoop("screen");
+    } catch (e: any) {
+      addLog("✖ screen live: " + (e.message || e));
+      setStatus("Permesso screen capture negato o non disponibile.");
     }
   };
 
@@ -1579,7 +2033,50 @@ export default function App() {
     }
   };
 
-  useEffect(() => stopAutoUpdate, []);
+  useEffect(() => () => {
+    stopAutoUpdate();
+    stopLiveView();
+  }, []);
+
+  useEffect(() => {
+    if (!autoFrameNavigation || !frame || !navigationState || isCapturing) return;
+
+    const step = routeSteps[activeStepIndex];
+    if (!step) return;
+
+    const bucket = Math.floor(
+      navigationState.distanceToInstructionMeters / NAV_FRAME_DISTANCE_BUCKET_METERS,
+    );
+    const now = Date.now();
+    const last = lastAutoNavSendRef.current;
+    const stepChanged = !last || last.stepIndex !== activeStepIndex;
+    const bucketChanged = !last || last.bucket !== bucket;
+    const enoughTimePassed = !last || now - last.sentAt >= NAV_FRAME_MIN_AUTO_MS;
+    const urgentManeuver = navigationState.distanceToInstructionMeters <= 35;
+    const shouldSend =
+      stepChanged ||
+      (navigationState.isManeuverSoon && bucketChanged && (enoughTimePassed || urgentManeuver));
+
+    if (!shouldSend) return;
+
+    lastAutoNavSendRef.current = { stepIndex: activeStepIndex, bucket, sentAt: now };
+
+    if (autoUpdateRef.current && !document.hidden) {
+      void sendMapToFrame().then((sent) => {
+        if (!sent) void sendNavigationStepToFrame(step, navigationState, "auto fallback");
+      });
+      return;
+    }
+
+    void sendNavigationStepToFrame(step, navigationState, "auto");
+  }, [
+    activeStepIndex,
+    autoFrameNavigation,
+    frame,
+    isCapturing,
+    navigationState,
+    routeSteps,
+  ]);
 
   // ───────── Setta destinazione ─────────
   const handleSetDest = () => {
@@ -1652,6 +2149,8 @@ export default function App() {
 
   const clearRoute = () => {
     routeAbortRef.current?.abort();
+    lastRouteRequestRef.current = null;
+    lastAutoNavSendRef.current = null;
     if (routeOutlineLayer.current && leafletMap.current) {
       routeOutlineLayer.current.removeFrom(leafletMap.current);
       routeOutlineLayer.current = null;
@@ -1766,13 +2265,13 @@ export default function App() {
       setPhotoUrl(origUrl);
       setShowMedia(true);
 
-      const sprite = await TxSprite.fromImageBytes(imgBytes, 36000);
+      const sprite = await TxSprite.fromImageBytes(imgBytes, frameImageSpriteBudget);
       const pngBytes = sprite.toPngBytes();
       if (pngBytes) setSpriteUrl(blobUrl(pngBytes, "image/png"));
 
       await frame.sendMessage(0x20, sprite.pack());
-      addLog("✔ sprite inviato agli occhiali");
-      setStatus("Immagine Pollinations mostrata!");
+      addLog(`✔ sprite Pollinations ${sprite.width}x${sprite.height} scala ${frameImageScale}%`);
+      setStatus(`Immagine Pollinations mostrata ${sprite.width}x${sprite.height}.`);
     } catch (e: any) {
       addLog("✖ generateImage: " + e.message);
       setStatus("Errore generazione immagine: " + e.message);
@@ -1802,7 +2301,7 @@ export default function App() {
       setPhotoUrl(blobUrl(bytes, file.type || "image/jpeg"));
       setShowMedia(true);
 
-      const sprite = await TxSprite.fromImageBytes(bytes, 36000);
+      const sprite = await TxSprite.fromImageBytes(bytes, frameImageSpriteBudget);
       const pngBytes = sprite.toPngBytes();
       if (pngBytes) {
         setSpriteUrl(blobUrl(pngBytes, "image/png"));
@@ -1810,10 +2309,10 @@ export default function App() {
 
       if (frame) {
         await frame.sendMessage(0x20, sprite.pack());
-        addLog("✔ immagine galleria inviata agli occhiali");
-        setStatus("Immagine galleria inviata al Frame.");
+        addLog(`✔ immagine galleria ${sprite.width}x${sprite.height} scala ${frameImageScale}%`);
+        setStatus(`Immagine galleria inviata ${sprite.width}x${sprite.height}.`);
       } else {
-        setStatus("Immagine pronta. Connetti il Frame per inviarla.");
+        setStatus(`Immagine pronta ${sprite.width}x${sprite.height}. Connetti il Frame per inviarla.`);
       }
     } catch (e: any) {
       addLog("✖ gallery image: " + e.message);
@@ -1862,6 +2361,7 @@ export default function App() {
     try {
       addLog("▶ disconnectFrame");
       stopAutoUpdate();
+      stopLiveView();
       await frame.stopFrameApp();
       await frame.disconnect();
       setFrame(null);
@@ -1871,66 +2371,86 @@ export default function App() {
     }
   };
 
+  const updateDashboardConfig = (patch: Partial<DashboardConfig>) => {
+    setDashboardConfig((current) => normalizeDashboardConfig({ ...current, ...patch }));
+  };
+
+  const getDashboardWeatherLine = async () => {
+    if (!pos) return "Meteo: n/d";
+
+    try {
+      const res = await fetch(
+        `https://api.open-meteo.com/v1/forecast?latitude=${pos.lat}&longitude=${pos.lng}&current_weather=true`,
+      );
+      const { current_weather: cw } = await res.json();
+      return `Meteo: ${cw.temperature}C, vento ${cw.windspeed} km/h`;
+    } catch {
+      return "Meteo: n/d";
+    }
+  };
+
+  const composeDashboardLines = (weatherLine: string, now = new Date()) => {
+    const dateStr = now.toLocaleDateString(undefined, {
+      weekday: "short",
+      day: "2-digit",
+      month: "short",
+    });
+    const timeStr = now.toLocaleTimeString(undefined, {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    const lines: string[] = [];
+
+    if (dashboardConfig.showBrand) lines.push("Mark - BullVerge:");
+    if (dashboardConfig.showDate) lines.push(dateStr);
+    if (dashboardConfig.showTime) lines.push(timeStr);
+    if (dashboardConfig.showWeather) lines.push(weatherLine);
+    if (dashboardConfig.showRoute) lines.push(`Rotta: ${routeLabel}`);
+    if (dashboardConfig.showGps) lines.push(`GPS: ${gpsLabel}`);
+    if (dashboardConfig.showNextStep) lines.push(`Next: ${activeStepLabel}`);
+    if (dashboardConfig.showFrameVitals && frameVitals) lines.push(`Frame: ${frameVitals}`);
+    if (dashboardConfig.customText.trim()) lines.push(dashboardConfig.customText.trim());
+
+    return lines.length > 0 ? lines : ["Dashboard"];
+  };
+
   const handleDashboard = async () => {
     if (!frame) return setStatus("Connetti prima");
     addLog("▶ showDashboard");
 
-    // prepara i dati
-    const now = new Date();
-    const dateStr = now.toLocaleDateString(undefined, { weekday: 'short', day: '2-digit', month: 'short' });
-    const timeStr = now.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-
-    let weatherStr = "n/d";
-    if (pos) {
-      const coordinates = `${pos.lat.toFixed(5)}, ${pos.lng.toFixed(5)}`;
-      weatherStr = `Coord: ${coordinates},\n`;
-      try {
-        const res = await fetch(
-          `https://api.open-meteo.com/v1/forecast?latitude=${pos.lat}&longitude=${pos.lng}&current_weather=true`
-        );
-        const { current_weather: cw } = await res.json();
-        weatherStr += `${cw.temperature}°C, vento ${cw.windspeed} km/h`;
-      } catch { }
-    }
-
-    // calcola la distanza in km (se hai già `dest`)
-    let distStr = "–";
-    if (dest && pos) {
-      const R = 6371e3;
-      const φ1 = pos.lat * Math.PI / 180, φ2 = dest.lat * Math.PI / 180;
-      const Δφ = (dest.lat - pos.lat) * Math.PI / 180;
-      const Δλ = (dest.lng - pos.lng) * Math.PI / 180;
-      const a = Math.sin(Δφ / 2) ** 2 + Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) ** 2;
-      const d = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-      distStr = `${(d / 1000).toFixed(1)} km`;
-    }
-
-    // componi il multilinea
-    const dash = [
-      `Mark - BullVerge: `,
-      `${dateStr},`,
-      `${timeStr},`,
-      `${weatherStr},`,
-      `${distStr}`
-    ].join("\n");
+    const dash = composeDashboardLines(await getDashboardWeatherLine()).join("\n");
     const tsb = new TxTextSpriteBlock({
-      width: 600,
-      fontSize: 30,
-      maxDisplayRows: 7,
+      width: dashboardConfig.width,
+      fontSize: dashboardConfig.fontSize,
+      maxDisplayRows: dashboardConfig.maxRows,
       text: dash,
     });
 
-    // invia prima header poi tutte le slice
     await frame.sendMessage(0x22, tsb.pack());
 
     for (const slice of tsb.sprites) {
       await frame.sendMessage(0x22, slice.pack());
     }
     setStatus("Dashboard inviata");
+    addLog(`✔ dashboard ${dashboardConfig.width}px/${dashboardConfig.fontSize}px/${dashboardConfig.maxRows} righe`);
   };
 
   const styles = buildResponsiveStyles(viewportWidth);
   const btn = (st: any, dis = false) => ({ ...st, ...(dis ? styles.btnDisabled : {}) });
+  const frameMapSpriteBudget = scaledSpriteBudget(FRAME_MAP_SPRITE_BUDGET, frameImageScale);
+  const frameImageSpriteBudget = scaledSpriteBudget(FRAME_IMAGE_SPRITE_BUDGET, frameImageScale);
+  const handleFrameImageScaleChange = (value: string) => {
+    const next = Number.parseInt(value, 10);
+    if (Number.isFinite(next)) setFrameImageScale(normalizeFrameImageScale(next));
+  };
+  const handleLiveViewIntervalChange = (value: string) => {
+    const next = Number.parseInt(value, 10);
+    if (Number.isFinite(next)) {
+      setLiveViewIntervalSeconds(
+        Math.round(clampNumber(next, LIVE_VIEW_MIN_INTERVAL_SECONDS, LIVE_VIEW_MAX_INTERVAL_SECONDS)),
+      );
+    }
+  };
   const destinationPoint = destinationFromInput();
   const gpsLabel =
     gpsStatus === "watching" && pos
@@ -1954,11 +2474,17 @@ export default function App() {
   const routeOverlayColor = routeOverlay?.variant === "driving" ? "#e11d48" : "#f59e0b";
   const routeOverlayDash = routeOverlay?.variant === "fallback" ? "18 12" : undefined;
   const activeStep = routeSteps[activeStepIndex] || null;
+  const activeStepDistanceLabel = navigationState
+    ? navigationState.distanceToInstructionMeters <= 18
+      ? "ora"
+      : `tra ${formatDistance(navigationState.distanceToInstructionMeters)}`
+    : "";
   const activeStepLabel = activeStep
-    ? activeStep.shortInstruction
+    ? `${frameManeuverSymbol(activeStep)} ${activeStep.instruction}${activeStepDistanceLabel ? ` ${activeStepDistanceLabel}` : ""}`
     : routeSummary
       ? "Indicazioni non disponibili"
       : "Imposta una destinazione";
+  const dashboardPreviewText = composeDashboardLines("Meteo: live").join("\n");
   const destLabel = dest
     ? `${formatCoord(dest.lat)}, ${formatCoord(dest.lng)}`
     : "Click sulla mappa o inserisci coordinate";
@@ -1975,13 +2501,13 @@ export default function App() {
   ];
 
   return (
-    <div style={styles.shell}>
+    <div ref={appShellRef} style={styles.shell}>
       <header style={styles.topBar}>
         <div style={styles.brandGroup}>
-          <div style={styles.logoMark}>MF</div>
+          <div style={styles.logoMark}>BV</div>
           <div>
-            <h1 style={styles.header}>Markino Frame</h1>
-            <div style={styles.subHeader}>Control center BLE</div>
+            <h1 style={styles.header}>BullFrame</h1>
+            <div style={styles.subHeader}>BullVerge's Control center for Frame</div>
           </div>
         </div>
         <div style={{ ...styles.connectionPill, ...(isConnected ? styles.connectionOn : {}) }}>
@@ -2092,7 +2618,9 @@ export default function App() {
               <div style={styles.navInstruction}>{activeStepLabel}</div>
               <div style={styles.navMeta}>
                 {activeStep
-                  ? `${formatDistance(activeStep.distanceMeters)} / ${formatDuration(activeStep.durationSeconds)}`
+                  ? navigationState
+                    ? `${formatDistance(navigationState.distanceToInstructionMeters)} alla manovra · ${formatDistance(navigationState.remainingMeters)} restanti`
+                    : `${formatDistance(activeStep.distanceMeters)} / ${formatDuration(activeStep.durationSeconds)}`
                   : "Nessuno step attivo"}
               </div>
             </div>
@@ -2162,7 +2690,9 @@ export default function App() {
                 <div style={styles.mapHudInstruction}>{activeStepLabel}</div>
                 <div style={styles.mapHudMeta}>
                   {activeStep
-                    ? `${formatDistance(activeStep.distanceMeters)} prima del prossimo step`
+                    ? navigationState
+                      ? `${formatDistance(navigationState.distanceToInstructionMeters)} alla manovra · ${formatDistance(navigationState.remainingMeters)} restanti`
+                      : `${formatDistance(activeStep.distanceMeters)} prima del prossimo step`
                     : dest
                       ? "Attendo GPS/OSRM per disegnare percorso e indicazioni"
                       : "Tocca la mappa o inserisci una destinazione"}
@@ -2405,6 +2935,7 @@ export default function App() {
             <div style={styles.sideTitle}>Frame</div>
             <button onClick={handleConnect} disabled={!!frame} style={btn(styles.primaryButton, !!frame)}>Connetti e carica</button>
             <button onClick={handleDashboard} disabled={!frame} style={btn(styles.secondaryButton, !frame)}>Dashboard</button>
+            <button onClick={() => setShowDashboardConfig(true)} style={styles.ghostButton}>Config dashboard</button>
             <button onClick={handleClear} disabled={!frame} style={btn(styles.ghostButton, !frame)}>Pulisci display</button>
             <button onClick={handleDisconnect} disabled={!frame} style={btn(styles.dangerButton, !frame)}>Disconnetti</button>
           </div>
@@ -2413,6 +2944,60 @@ export default function App() {
             <div style={styles.sideTitle}>Mappa live</div>
             <button onClick={startAutoUpdate} disabled={!frame || isCapturing} style={btn(styles.secondaryButton, !frame || isCapturing)}>Auto mappa</button>
             <button onClick={stopAutoUpdate} style={styles.ghostButton}>Stop auto</button>
+            <button onClick={() => setAutoFrameNavigation((value) => !value)} style={styles.ghostButton}>
+              Auto nav {autoFrameNavigation ? "on" : "off"}
+            </button>
+          </div>
+
+          <div style={styles.sideBlock}>
+            <div style={styles.sideTitle}>Immagini Frame</div>
+            <label style={styles.sideControl}>
+              <span style={styles.sideControlHead}>
+                <span>Scala sprite</span>
+                <strong>{frameImageScale}%</strong>
+              </span>
+              <input
+                type="range"
+                min={FRAME_IMAGE_SCALE_MIN}
+                max={FRAME_IMAGE_SCALE_MAX}
+                step={FRAME_IMAGE_SCALE_STEP}
+                value={frameImageScale}
+                onChange={(e) => handleFrameImageScaleChange(e.target.value)}
+                style={styles.rangeField}
+              />
+            </label>
+            <div style={styles.sideInline}>
+              <input
+                type="number"
+                min={FRAME_IMAGE_SCALE_MIN}
+                max={FRAME_IMAGE_SCALE_MAX}
+                step={FRAME_IMAGE_SCALE_STEP}
+                value={frameImageScale}
+                onChange={(e) => handleFrameImageScaleChange(e.target.value)}
+                style={styles.sideNumberField}
+              />
+              <span style={styles.sideHint}>Mappa {frameMapSpriteBudget.toLocaleString()} px</span>
+            </div>
+            <div style={styles.sideHint}>Foto/AI {frameImageSpriteBudget.toLocaleString()} px</div>
+          </div>
+
+          <div style={styles.sideBlock}>
+            <div style={styles.sideTitle}>Live view</div>
+            <button onClick={startAppLiveView} disabled={!frame} style={btn(styles.secondaryButton, !frame)}>Live app</button>
+            <button onClick={startScreenLiveView} disabled={!frame} style={btn(styles.ghostButton, !frame)}>Live screen</button>
+            <button onClick={stopLiveView} disabled={liveViewMode === "off"} style={btn(styles.ghostButton, liveViewMode === "off")}>Stop live</button>
+            <div style={styles.sideInline}>
+              <input
+                type="number"
+                min={LIVE_VIEW_MIN_INTERVAL_SECONDS}
+                max={LIVE_VIEW_MAX_INTERVAL_SECONDS}
+                step={1}
+                value={liveViewIntervalSeconds}
+                onChange={(e) => handleLiveViewIntervalChange(e.target.value)}
+                style={styles.sideNumberField}
+              />
+              <span style={styles.sideHint}>ogni {liveViewIntervalSeconds}s · {liveViewMode}</span>
+            </div>
           </div>
 
           <div style={styles.sideBlock}>
@@ -2421,6 +3006,100 @@ export default function App() {
           </div>
         </aside>
       </main>
+
+      {showDashboardConfig && (
+        <div style={styles.modalBackdrop}>
+          <section role="dialog" aria-modal="true" aria-label="Dashboard" style={styles.modalPanel}>
+            <div style={styles.sectionHead}>
+              <div>
+                <h2 style={styles.sectionTitle}>Dashboard</h2>
+                <div style={styles.sectionMeta}>{dashboardConfig.width}px · {dashboardConfig.fontSize}px · {dashboardConfig.maxRows} righe</div>
+              </div>
+              <div style={styles.modalActions}>
+                <button onClick={() => setDashboardConfig(DEFAULT_DASHBOARD_CONFIG)} style={styles.ghostButton}>Default</button>
+                <button onClick={handleDashboard} disabled={!frame} style={btn(styles.secondaryButton, !frame)}>Invia</button>
+                <button onClick={() => setShowDashboardConfig(false)} style={styles.ghostButton}>Chiudi</button>
+              </div>
+            </div>
+
+            <div style={styles.formGrid}>
+              {([
+                ["showBrand", "Brand"],
+                ["showDate", "Data"],
+                ["showTime", "Ora"],
+                ["showWeather", "Meteo"],
+                ["showRoute", "Rotta"],
+                ["showGps", "GPS"],
+                ["showNextStep", "Indicazione"],
+                ["showFrameVitals", "Frame"],
+              ] as Array<[keyof DashboardConfig, string]>).map(([key, label]) => (
+                <label key={key} style={styles.checkRow}>
+                  <input
+                    type="checkbox"
+                    checked={Boolean(dashboardConfig[key])}
+                    onChange={(e) => updateDashboardConfig({ [key]: e.target.checked } as Partial<DashboardConfig>)}
+                  />
+                  {label}
+                </label>
+              ))}
+            </div>
+
+            <div style={styles.formGrid}>
+              <label style={styles.fieldLabel}>
+                Larghezza
+                <input
+                  type="number"
+                  min={320}
+                  max={640}
+                  step={20}
+                  value={dashboardConfig.width}
+                  onChange={(e) => updateDashboardConfig({ width: Number(e.target.value) })}
+                  style={styles.field}
+                />
+              </label>
+              <label style={styles.fieldLabel}>
+                Font
+                <input
+                  type="number"
+                  min={18}
+                  max={48}
+                  step={2}
+                  value={dashboardConfig.fontSize}
+                  onChange={(e) => updateDashboardConfig({ fontSize: Number(e.target.value) })}
+                  style={styles.field}
+                />
+              </label>
+              <label style={styles.fieldLabel}>
+                Righe
+                <input
+                  type="number"
+                  min={3}
+                  max={10}
+                  step={1}
+                  value={dashboardConfig.maxRows}
+                  onChange={(e) => updateDashboardConfig({ maxRows: Number(e.target.value) })}
+                  style={styles.field}
+                />
+              </label>
+            </div>
+
+            <label style={styles.fieldLabel}>
+              Testo custom
+              <textarea
+                rows={3}
+                value={dashboardConfig.customText}
+                onChange={(e) => updateDashboardConfig({ customText: e.target.value })}
+                style={styles.textarea}
+              />
+            </label>
+
+            <div style={styles.responseBox}>
+              <div style={styles.previewTitle}>Anteprima</div>
+              <pre style={styles.responsePre}>{dashboardPreviewText}</pre>
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   );
 }
@@ -2551,6 +3230,72 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 900,
     textTransform: "uppercase",
     color: "#d8d3ef",
+  },
+  sideControl: {
+    display: "grid",
+    gap: 6,
+    gridColumn: "1 / -1",
+    minWidth: 0,
+    color: "#f8fafc",
+    fontSize: 12,
+    fontWeight: 800,
+  },
+  sideControlHead: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 8,
+    color: "#f8fafc",
+  },
+  sideInline: {
+    display: "grid",
+    gridTemplateColumns: "84px minmax(0, 1fr)",
+    alignItems: "center",
+    gap: 8,
+    gridColumn: "1 / -1",
+    minWidth: 0,
+  },
+  sideNumberField: {
+    width: "100%",
+    minHeight: 36,
+    padding: "8px 9px",
+    borderRadius: 6,
+    border: "1px solid #9b927f",
+    backgroundColor: "#fffdf8",
+    color: "#171717",
+    fontWeight: 900,
+    boxSizing: "border-box",
+  },
+  sideHint: {
+    gridColumn: "1 / -1",
+    color: "#d8d3ef",
+    fontSize: 12,
+    fontWeight: 800,
+    overflowWrap: "anywhere",
+  },
+  modalBackdrop: {
+    position: "fixed",
+    inset: 0,
+    zIndex: 1200,
+    display: "grid",
+    placeItems: "center",
+    padding: 18,
+    backgroundColor: "rgba(21, 18, 12, .46)",
+  },
+  modalPanel: {
+    width: "min(760px, 100%)",
+    maxHeight: "calc(100vh - 36px)",
+    overflowY: "auto",
+    padding: 16,
+    borderRadius: 8,
+    backgroundColor: "#ffffff",
+    border: "1px solid #ddd4c5",
+    boxShadow: "0 18px 52px rgba(21, 18, 12, .24)",
+  },
+  modalActions: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: 8,
+    justifyContent: "flex-end",
   },
   sectionHead: {
     display: "flex",
