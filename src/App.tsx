@@ -4,7 +4,6 @@ import {
   StdLua,
   TxPlainText,
   TxCaptureSettings,
-  TxTextSpriteBlock,
   TxSprite,
   RxPhoto,
 } from "frame-msg";
@@ -43,9 +42,10 @@ const FRAME_MIN_SPRITE_BUDGET = 6000;
 const FRAME_MAX_SPRITE_BUDGET = 160000;
 const FRAME_IMAGE_SCALE_STORAGE_KEY = "markino.frameImageScale";
 const FRAME_IMAGE_SCALE_MIN = 50;
-const FRAME_IMAGE_SCALE_MAX = 220;
+const FRAME_IMAGE_SCALE_MAX = 110;
 const FRAME_IMAGE_SCALE_STEP = 10;
 const DASHBOARD_CONFIG_STORAGE_KEY = "markino.dashboardConfig";
+const DASHBOARD_AUTO_INTERVAL_MS = 5000;
 const LIVE_VIEW_DEFAULT_INTERVAL_SECONDS = 5;
 const LIVE_VIEW_MIN_INTERVAL_SECONDS = 3;
 const LIVE_VIEW_MAX_INTERVAL_SECONDS = 30;
@@ -94,6 +94,17 @@ type CaptureQualityOption = {
   value: number;
   api: JpegQuality;
 };
+type DashboardModuleKey =
+  | "brand"
+  | "date"
+  | "time"
+  | "weather"
+  | "route"
+  | "gps"
+  | "nextStep"
+  | "frameVitals"
+  | "custom";
+type DashboardColors = Record<DashboardModuleKey, string>;
 type DashboardConfig = {
   showBrand: boolean;
   showDate: boolean;
@@ -104,9 +115,18 @@ type DashboardConfig = {
   showNextStep: boolean;
   showFrameVitals: boolean;
   customText: string;
+  emoji: string;
+  showEmoji: boolean;
+  animate: boolean;
+  colors: DashboardColors;
   fontSize: number;
   maxRows: number;
   width: number;
+};
+type DashboardItem = {
+  key: DashboardModuleKey;
+  label: string;
+  value: string;
 };
 type LiveViewMode = "off" | "app" | "screen";
 
@@ -134,6 +154,17 @@ const CAPTURE_QUALITIES: CaptureQualityOption[] = [
   { label: "High", value: 3, api: "HIGH" },
   { label: "Very high", value: 4, api: "VERY_HIGH" },
 ];
+const DEFAULT_DASHBOARD_COLORS: DashboardColors = {
+  brand: "#38bdf8",
+  date: "#f8fafc",
+  time: "#facc15",
+  weather: "#86efac",
+  route: "#fb923c",
+  gps: "#bae6fd",
+  nextStep: "#f43f5e",
+  frameVitals: "#c4b5fd",
+  custom: "#ffffff",
+};
 const DEFAULT_DASHBOARD_CONFIG: DashboardConfig = {
   showBrand: true,
   showDate: true,
@@ -144,6 +175,10 @@ const DEFAULT_DASHBOARD_CONFIG: DashboardConfig = {
   showNextStep: false,
   showFrameVitals: false,
   customText: "",
+  emoji: "🧭",
+  showEmoji: true,
+  animate: false,
+  colors: DEFAULT_DASHBOARD_COLORS,
   fontSize: 30,
   maxRows: 7,
   width: 600,
@@ -187,6 +222,13 @@ const readStoredFrameImageScale = () => {
 const normalizeDashboardConfig = (value: Partial<DashboardConfig> = {}): DashboardConfig => ({
   ...DEFAULT_DASHBOARD_CONFIG,
   ...value,
+  colors: {
+    ...DEFAULT_DASHBOARD_COLORS,
+    ...(value.colors ?? {}),
+  },
+  emoji: (value.emoji ?? DEFAULT_DASHBOARD_CONFIG.emoji).slice(0, 8),
+  showEmoji: value.showEmoji ?? DEFAULT_DASHBOARD_CONFIG.showEmoji,
+  animate: value.animate ?? DEFAULT_DASHBOARD_CONFIG.animate,
   fontSize: Math.round(clampNumber(value.fontSize ?? DEFAULT_DASHBOARD_CONFIG.fontSize, 18, 48)),
   maxRows: Math.round(clampNumber(value.maxRows ?? DEFAULT_DASHBOARD_CONFIG.maxRows, 3, 10)),
   width: Math.round(clampNumber(value.width ?? DEFAULT_DASHBOARD_CONFIG.width, 320, 640)),
@@ -727,6 +769,11 @@ const buildResponsiveStyles = (viewportWidth: number): Record<string, React.CSSP
       marginTop: 2,
       fontSize: 11,
     },
+    headerActions: {
+      ...styles.headerActions,
+      flex: "0 0 auto",
+      gap: 6,
+    },
     connectionPill: {
       ...styles.connectionPill,
       minWidth: 0,
@@ -780,6 +827,10 @@ const buildResponsiveStyles = (viewportWidth: number): Record<string, React.CSSP
     sideInline: {
       ...styles.sideInline,
       gridTemplateColumns: "76px minmax(0, 1fr)",
+    },
+    colorGrid: {
+      ...styles.colorGrid,
+      gridTemplateColumns: isTiny ? "minmax(0, 1fr)" : "repeat(2, minmax(0, 1fr))",
     },
     modalBackdrop: {
       ...styles.modalBackdrop,
@@ -1046,6 +1097,8 @@ export default function App() {
   const [frameImageScale, setFrameImageScale] = useState(readStoredFrameImageScale);
   const [dashboardConfig, setDashboardConfig] = useState(readStoredDashboardConfig);
   const [showDashboardConfig, setShowDashboardConfig] = useState(false);
+  const [isMenuCollapsed, setIsMenuCollapsed] = useState(false);
+  const [autoDashboard, setAutoDashboard] = useState(false);
   const [frameVitals, setFrameVitals] = useState("");
   const [liveViewMode, setLiveViewMode] = useState<LiveViewMode>("off");
   const [liveViewIntervalSeconds, setLiveViewIntervalSeconds] = useState(LIVE_VIEW_DEFAULT_INTERVAL_SECONDS);
@@ -2362,6 +2415,7 @@ export default function App() {
       addLog("▶ disconnectFrame");
       stopAutoUpdate();
       stopLiveView();
+      setAutoDashboard(false);
       await frame.stopFrameApp();
       await frame.disconnect();
       setFrame(null);
@@ -2389,7 +2443,7 @@ export default function App() {
     }
   };
 
-  const composeDashboardLines = (weatherLine: string, now = new Date()) => {
+  const composeDashboardItems = (weatherLine: string, now = new Date()): DashboardItem[] => {
     const dateStr = now.toLocaleDateString(undefined, {
       weekday: "short",
       day: "2-digit",
@@ -2399,40 +2453,107 @@ export default function App() {
       hour: "2-digit",
       minute: "2-digit",
     });
-    const lines: string[] = [];
+    const items: DashboardItem[] = [];
 
-    if (dashboardConfig.showBrand) lines.push("Mark - BullVerge:");
-    if (dashboardConfig.showDate) lines.push(dateStr);
-    if (dashboardConfig.showTime) lines.push(timeStr);
-    if (dashboardConfig.showWeather) lines.push(weatherLine);
-    if (dashboardConfig.showRoute) lines.push(`Rotta: ${routeLabel}`);
-    if (dashboardConfig.showGps) lines.push(`GPS: ${gpsLabel}`);
-    if (dashboardConfig.showNextStep) lines.push(`Next: ${activeStepLabel}`);
-    if (dashboardConfig.showFrameVitals && frameVitals) lines.push(`Frame: ${frameVitals}`);
-    if (dashboardConfig.customText.trim()) lines.push(dashboardConfig.customText.trim());
+    if (dashboardConfig.showBrand) items.push({ key: "brand", label: "BullFrame", value: "Mark - BullVerge" });
+    if (dashboardConfig.showDate) items.push({ key: "date", label: "Data", value: dateStr });
+    if (dashboardConfig.showTime) items.push({ key: "time", label: "Ora", value: timeStr });
+    if (dashboardConfig.showWeather) items.push({ key: "weather", label: "Meteo", value: weatherLine.replace(/^Meteo:\s*/i, "") });
+    if (dashboardConfig.showRoute) items.push({ key: "route", label: "Rotta", value: routeLabel });
+    if (dashboardConfig.showGps) items.push({ key: "gps", label: "GPS", value: gpsLabel });
+    if (dashboardConfig.showNextStep) items.push({ key: "nextStep", label: "Indicazione", value: activeStepLabel });
+    if (dashboardConfig.showFrameVitals && frameVitals) {
+      items.push({ key: "frameVitals", label: "Frame batt/mem", value: frameVitals });
+    }
+    if (dashboardConfig.customText.trim()) {
+      items.push({ key: "custom", label: "Custom", value: dashboardConfig.customText.trim() });
+    }
 
-    return lines.length > 0 ? lines : ["Dashboard"];
+    return items.length > 0 ? items : [{ key: "custom", label: "Dashboard", value: "Vuota" }];
   };
 
-  const handleDashboard = async () => {
-    if (!frame) return setStatus("Connetti prima");
-    addLog("▶ showDashboard");
+  const fitCanvasText = (
+    ctx: CanvasRenderingContext2D,
+    text: string,
+    maxWidth: number,
+  ) => {
+    if (ctx.measureText(text).width <= maxWidth) return text;
+    let value = text;
+    while (value.length > 4 && ctx.measureText(`${value}...`).width > maxWidth) {
+      value = value.slice(0, -1);
+    }
+    return `${value}...`;
+  };
 
-    const dash = composeDashboardLines(await getDashboardWeatherLine()).join("\n");
-    const tsb = new TxTextSpriteBlock({
-      width: dashboardConfig.width,
-      fontSize: dashboardConfig.fontSize,
-      maxDisplayRows: dashboardConfig.maxRows,
-      text: dash,
+  const renderDashboardCanvas = (items: DashboardItem[], now = new Date()) => {
+    const canvas = document.createElement("canvas");
+    canvas.width = FRAME_MAP_WIDTH;
+    canvas.height = FRAME_MAP_HEIGHT;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Canvas dashboard non disponibile.");
+
+    const phase = dashboardConfig.animate ? Math.floor(now.getTime() / 1000) % 4 : 0;
+    const pulse = dashboardConfig.animate ? 0.72 + 0.28 * Math.sin(now.getTime() / 420) : 1;
+    const contentWidth = Math.min(dashboardConfig.width, canvas.width - 32);
+    const x = Math.round((canvas.width - contentWidth) / 2);
+    const rowHeight = Math.max(34, Math.floor((canvas.height - 40) / dashboardConfig.maxRows));
+
+    ctx.fillStyle = "#111827";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "rgba(248, 250, 252, .08)";
+    ctx.fillRect(x - 8, 12, contentWidth + 16, canvas.height - 24);
+
+    if (dashboardConfig.showEmoji && dashboardConfig.emoji.trim()) {
+      ctx.globalAlpha = pulse;
+      ctx.font = "58px system-ui, Apple Color Emoji, Segoe UI Emoji, sans-serif";
+      ctx.textAlign = "right";
+      ctx.textBaseline = "top";
+      ctx.fillText(dashboardConfig.emoji.trim(), canvas.width - 26, 18);
+      ctx.globalAlpha = 1;
+    }
+
+    items.slice(0, dashboardConfig.maxRows).forEach((item, index) => {
+      const y = 24 + index * rowHeight;
+      const color = dashboardConfig.colors[item.key] || "#ffffff";
+      const animatedSuffix = dashboardConfig.animate && index === 0 ? ".".repeat(phase) : "";
+
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+      ctx.font = "800 12px Inter, system-ui, sans-serif";
+      ctx.fillStyle = "rgba(248, 250, 252, .72)";
+      ctx.fillText(item.label.toUpperCase(), x, y);
+
+      ctx.font = `900 ${dashboardConfig.fontSize}px Inter, system-ui, sans-serif`;
+      ctx.fillStyle = color;
+      ctx.fillText(
+        fitCanvasText(ctx, `${item.value}${animatedSuffix}`, contentWidth - 8),
+        x,
+        y + 13,
+      );
     });
 
-    await frame.sendMessage(0x22, tsb.pack());
-
-    for (const slice of tsb.sprites) {
-      await frame.sendMessage(0x22, slice.pack());
+    if (dashboardConfig.animate) {
+      const progress = (now.getTime() % DASHBOARD_AUTO_INTERVAL_MS) / DASHBOARD_AUTO_INTERVAL_MS;
+      ctx.fillStyle = "rgba(20, 184, 166, .22)";
+      ctx.fillRect(x, canvas.height - 18, contentWidth, 5);
+      ctx.fillStyle = "#14b8a6";
+      ctx.fillRect(x, canvas.height - 18, contentWidth * progress, 5);
     }
-    setStatus("Dashboard inviata");
-    addLog(`✔ dashboard ${dashboardConfig.width}px/${dashboardConfig.fontSize}px/${dashboardConfig.maxRows} righe`);
+
+    return canvas;
+  };
+
+  const handleDashboard = async (reason = "manual") => {
+    if (!frame) return setStatus("Connetti prima");
+    addLog(`▶ showDashboard ${reason}`);
+
+    const items = composeDashboardItems(await getDashboardWeatherLine());
+    const canvas = renderDashboardCanvas(items);
+    const sent = await sendCanvasSnapshotToFrame(canvas, "Dashboard", frameImageSpriteBudget);
+    if (sent) {
+      setStatus(reason === "auto" ? "Dashboard auto aggiornata." : "Dashboard inviata.");
+      addLog(`✔ dashboard canvas ${dashboardConfig.width}px/${dashboardConfig.fontSize}px/${dashboardConfig.maxRows} righe`);
+    }
   };
 
   const styles = buildResponsiveStyles(viewportWidth);
@@ -2484,7 +2605,9 @@ export default function App() {
     : routeSummary
       ? "Indicazioni non disponibili"
       : "Imposta una destinazione";
-  const dashboardPreviewText = composeDashboardLines("Meteo: live").join("\n");
+  const dashboardPreviewText = composeDashboardItems("Meteo: live")
+    .map((item) => `${item.label}: ${item.value}`)
+    .join("\n");
   const destLabel = dest
     ? `${formatCoord(dest.lat)}, ${formatCoord(dest.lng)}`
     : "Click sulla mappa o inserisci coordinate";
@@ -2500,6 +2623,32 @@ export default function App() {
     { id: "logs", label: "Log" },
   ];
 
+  useEffect(() => {
+    if (!autoDashboard || !frame) return;
+
+    let stopped = false;
+    const tick = () => {
+      if (!document.hidden && !stopped) void handleDashboard("auto");
+    };
+
+    tick();
+    const timer = setInterval(tick, DASHBOARD_AUTO_INTERVAL_MS);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, [
+    activeStepLabel,
+    autoDashboard,
+    dashboardConfig,
+    frame,
+    frameImageSpriteBudget,
+    frameVitals,
+    gpsLabel,
+    pos,
+    routeLabel,
+  ]);
+
   return (
     <div ref={appShellRef} style={styles.shell}>
       <header style={styles.topBar}>
@@ -2510,8 +2659,13 @@ export default function App() {
             <div style={styles.subHeader}>BullVerge's Control center for Frame</div>
           </div>
         </div>
-        <div style={{ ...styles.connectionPill, ...(isConnected ? styles.connectionOn : {}) }}>
-          {isConnected ? "Connesso" : "Offline"}
+        <div style={styles.headerActions}>
+          <button onClick={() => setIsMenuCollapsed((value) => !value)} style={styles.ghostButton}>
+            {isMenuCollapsed ? "Apri menu" : "Chiudi menu"}
+          </button>
+          <div style={{ ...styles.connectionPill, ...(isConnected ? styles.connectionOn : {}) }}>
+            {isConnected ? "Connesso" : "Offline"}
+          </div>
         </div>
       </header>
 
@@ -2530,7 +2684,7 @@ export default function App() {
         ))}
       </nav>
 
-      <main style={styles.appLayout}>
+      <main style={isMenuCollapsed ? { ...styles.appLayout, gridTemplateColumns: "minmax(0, 1fr)" } : styles.appLayout}>
         <section style={styles.workspace}>
           <section style={{ ...styles.panel, display: activeTab === "map" ? "block" : "none" }}>
             <div style={styles.sectionHead}>
@@ -2930,14 +3084,18 @@ export default function App() {
           </section>
         </section>
 
-        <aside style={styles.sidePanel}>
+        {!isMenuCollapsed && <aside style={styles.sidePanel}>
           <div style={styles.sideBlock}>
             <div style={styles.sideTitle}>Frame</div>
             <button onClick={handleConnect} disabled={!!frame} style={btn(styles.primaryButton, !!frame)}>Connetti e carica</button>
-            <button onClick={handleDashboard} disabled={!frame} style={btn(styles.secondaryButton, !frame)}>Dashboard</button>
+            <button onClick={() => void handleDashboard()} disabled={!frame} style={btn(styles.secondaryButton, !frame)}>Dashboard</button>
             <button onClick={() => setShowDashboardConfig(true)} style={styles.ghostButton}>Config dashboard</button>
+            <button onClick={() => setAutoDashboard((value) => !value)} style={styles.ghostButton}>
+              Auto dashboard {autoDashboard ? "on" : "off"}
+            </button>
             <button onClick={handleClear} disabled={!frame} style={btn(styles.ghostButton, !frame)}>Pulisci display</button>
             <button onClick={handleDisconnect} disabled={!frame} style={btn(styles.dangerButton, !frame)}>Disconnetti</button>
+            <div style={styles.sideHint}>Dashboard invia il pannello configurato. Auto dashboard lo aggiorna ogni 5s.</div>
           </div>
 
           <div style={styles.sideBlock}>
@@ -2947,6 +3105,7 @@ export default function App() {
             <button onClick={() => setAutoFrameNavigation((value) => !value)} style={styles.ghostButton}>
               Auto nav {autoFrameNavigation ? "on" : "off"}
             </button>
+            <div style={styles.sideHint}>Auto mappa manda lo screenshot della mappa. Auto nav manda la svolta quando arrivi vicino alla manovra.</div>
           </div>
 
           <div style={styles.sideBlock}>
@@ -2979,6 +3138,7 @@ export default function App() {
               <span style={styles.sideHint}>Mappa {frameMapSpriteBudget.toLocaleString()} px</span>
             </div>
             <div style={styles.sideHint}>Foto/AI {frameImageSpriteBudget.toLocaleString()} px</div>
+            <div style={styles.sideHint}>Limite massimo 110%: oltre il Frame satura memoria e BLE.</div>
           </div>
 
           <div style={styles.sideBlock}>
@@ -2998,13 +3158,14 @@ export default function App() {
               />
               <span style={styles.sideHint}>ogni {liveViewIntervalSeconds}s · {liveViewMode}</span>
             </div>
+            <div style={styles.sideHint}>Live app cattura questa web app. Live screen chiede permesso browser per tab/finestra/schermo.</div>
           </div>
 
           <div style={styles.sideBlock}>
             <div style={styles.sideTitle}>Stato</div>
             <div style={styles.statusBox}>{status}</div>
           </div>
-        </aside>
+        </aside>}
       </main>
 
       {showDashboardConfig && (
@@ -3017,7 +3178,7 @@ export default function App() {
               </div>
               <div style={styles.modalActions}>
                 <button onClick={() => setDashboardConfig(DEFAULT_DASHBOARD_CONFIG)} style={styles.ghostButton}>Default</button>
-                <button onClick={handleDashboard} disabled={!frame} style={btn(styles.secondaryButton, !frame)}>Invia</button>
+                <button onClick={() => void handleDashboard()} disabled={!frame} style={btn(styles.secondaryButton, !frame)}>Invia</button>
                 <button onClick={() => setShowDashboardConfig(false)} style={styles.ghostButton}>Chiudi</button>
               </div>
             </div>
@@ -3031,7 +3192,7 @@ export default function App() {
                 ["showRoute", "Rotta"],
                 ["showGps", "GPS"],
                 ["showNextStep", "Indicazione"],
-                ["showFrameVitals", "Frame"],
+                ["showFrameVitals", "Frame batt/mem"],
               ] as Array<[keyof DashboardConfig, string]>).map(([key, label]) => (
                 <label key={key} style={styles.checkRow}>
                   <input
@@ -3043,6 +3204,7 @@ export default function App() {
                 </label>
               ))}
             </div>
+            <div style={styles.inlineHint}>Frame batt/mem mostra la lettura batteria/memoria presa al momento della connessione.</div>
 
             <div style={styles.formGrid}>
               <label style={styles.fieldLabel}>
@@ -3083,6 +3245,62 @@ export default function App() {
               </label>
             </div>
 
+            <div style={styles.formGrid}>
+              <label style={styles.checkRow}>
+                <input
+                  type="checkbox"
+                  checked={dashboardConfig.showEmoji}
+                  onChange={(e) => updateDashboardConfig({ showEmoji: e.target.checked })}
+                />
+                Emoji
+              </label>
+              <label style={styles.checkRow}>
+                <input
+                  type="checkbox"
+                  checked={dashboardConfig.animate}
+                  onChange={(e) => updateDashboardConfig({ animate: e.target.checked })}
+                />
+                Animazione
+              </label>
+              <label style={styles.fieldLabel}>
+                Emoji dashboard
+                <input
+                  type="text"
+                  value={dashboardConfig.emoji}
+                  onChange={(e) => updateDashboardConfig({ emoji: e.target.value })}
+                  style={styles.field}
+                />
+              </label>
+            </div>
+
+            <div style={styles.colorGrid}>
+              {([
+                ["brand", "Brand"],
+                ["date", "Data"],
+                ["time", "Ora"],
+                ["weather", "Meteo"],
+                ["route", "Rotta"],
+                ["gps", "GPS"],
+                ["nextStep", "Indicazione"],
+                ["frameVitals", "Frame"],
+                ["custom", "Custom"],
+              ] as Array<[DashboardModuleKey, string]>).map(([key, label]) => (
+                <label key={key} style={styles.colorField}>
+                  <span>{label}</span>
+                  <input
+                    type="color"
+                    value={dashboardConfig.colors[key]}
+                    onChange={(e) => updateDashboardConfig({
+                      colors: {
+                        ...dashboardConfig.colors,
+                        [key]: e.target.value,
+                      },
+                    })}
+                  />
+                </label>
+              ))}
+            </div>
+
             <label style={styles.fieldLabel}>
               Testo custom
               <textarea
@@ -3121,6 +3339,13 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 12,
     maxWidth: 1180,
     margin: "0 auto 14px",
+  },
+  headerActions: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    flexWrap: "wrap",
+    justifyContent: "flex-end",
   },
   brandGroup: {
     display: "flex",
@@ -3271,6 +3496,32 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 12,
     fontWeight: 800,
     overflowWrap: "anywhere",
+  },
+  inlineHint: {
+    marginTop: 8,
+    color: "#6b6255",
+    fontSize: 12,
+    fontWeight: 800,
+  },
+  colorGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))",
+    gap: 10,
+    marginTop: 12,
+  },
+  colorField: {
+    minHeight: 42,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+    padding: 8,
+    borderRadius: 6,
+    border: "1px solid #ddd4c5",
+    backgroundColor: "#f7f4ed",
+    color: "#342c23",
+    fontSize: 12,
+    fontWeight: 900,
   },
   modalBackdrop: {
     position: "fixed",
